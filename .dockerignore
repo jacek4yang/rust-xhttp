@@ -1,0 +1,25 @@
+# Build context for tests/harness/docker/Dockerfile (extreme-test harness).
+# Context = repo root (run.sh does `docker build -f .../Dockerfile <repo-root>`),
+# so THIS file is authoritative. Keep the context small and free of secrets, but
+# RETAIN the prebuilt xray client binary the harness uses as the REALITY peer.
+target/
+.git/
+docs/
+*.md
+
+# Exclude all local-only assets EXCEPT the xray client binary. The `dir/*` + `!`
+# form re-includes one file inside an otherwise-excluded tree.
+local/config/
+local/secrets/
+local/geodata/
+local/artifacts/
+local/cache/
+local/logs/
+local/tmp/
+local/bin/
+local/references/v2rayng/
+local/references/Xray-core/*
+!local/references/Xray-core/xray
+
+# Harness output
+tests/harness/docker/artifacts/

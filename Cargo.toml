@@ -1,0 +1,81 @@
+[package]
+name = "rust-xhttp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Pure-Rust XHTTP/VLESS server wire-compatible with the official Xray-core client (XHTTP packet-up + VLESS + VLESS-Encryption + Vision + XUDP)"
+license = "MPL-2.0"
+repository = "local"
+
+# This crate is a clean-room-by-spec port of several MPL-2.0 packages from
+# Xray-core (proxy/vless, transport/internet/splithttp, common/xudp). The MPL
+# notice is retained at the module level for the ported code; see README.md.
+
+[lib]
+name = "rust_xhttp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-xhttp"
+path = "src/main.rs"
+
+[dependencies]
+# async runtime / io
+tokio = { version = "1.40", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal"] }
+bytes = "1.7"
+futures = "0.3"
+
+# http
+hyper = { version = "1.4", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2"] }
+http = "1.1"
+http-body-util = "0.1"
+
+# tls
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2.1"
+
+# crypto
+blake3 = "1.5"
+x25519-dalek = { version = "2.0", features = ["static_secrets", "zeroize"] }
+ml-kem = { version = "0.2", features = ["deterministic", "zeroize"] }
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+base64 = "0.22"
+rand = "0.8"
+rand_core = "0.6"
+subtle = "2.6"
+zeroize = { version = "1.8", features = ["derive"] }
+
+# config / serde
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+uuid = { version = "1.10", features = ["serde"] }
+
+# observability / errors
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["full", "test-util"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "kernels"
+harness = false
+
+[[bench]]
+name = "geo"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false

@@ -1,0 +1,44 @@
+[Unit]
+# Production systemd unit for rust-xhttp (x86_64 Linux).
+# Install: see ops/deploy.sh, or copy to /etc/systemd/system/ and
+#   systemctl daemon-reload && systemctl enable --now rust-xhttp
+Description=rust-xhttp XHTTP/VLESS server
+Documentation=https://local/rust-xhttp
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The binary resolves its config path relative to the working directory.
+WorkingDirectory=/root/xhttp
+ExecStart=/root/xhttp/rust-xhttp config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2s
+
+LimitNOFILE=65536
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rust-xhttp
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/root/xhttp
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Disable core dumps so key material is never written to disk.
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

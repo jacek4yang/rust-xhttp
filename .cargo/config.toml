@@ -1,0 +1,25 @@
+# Build configuration — this project targets 64-bit Linux x86_64 ONLY.
+#
+# Static CPU features let RustCrypto (aes, polyval/ghash, chacha20) select and
+# INLINE the AES-NI / CLMUL backends at compile time instead of dispatching at
+# runtime per call. The framed data path is AEAD-bound, so this is a direct
+# throughput win (measured with `cargo bench --bench kernels`, see
+# docs/production-hardening.md).
+#
+# Default: x86-64-v3 (+AVX2/BMI2/FMA, SSE4.2/POPCNT) plus AES-NI + PCLMULQDQ.
+# MIN CPU: Haswell/Zen (2013+). MEASURED win over the previous v2 default
+# (`cargo bench --bench kernels`, seal+open roundtrip, 1500B): ChaCha20-Poly1305
+# ~5.6us -> ~2.7us (~2x — the AVX2 backend engages), AES-128-GCM ~1.43us -> ~1.33us
+# (~7%; AES-NI was already inlined at v2). Chosen for the modern (2013+) deployment
+# fleet; a CPU without AVX2 will SIGILL.
+#
+# Need to run on an older (2010-2012, pre-AVX2) CPU? Build for v2 instead:
+#   RUSTFLAGS="-C target-cpu=x86-64-v2 -C target-feature=+aes,+pclmulqdq" cargo build --release
+# Or for the best codegen on the exact build host:
+#   RUSTFLAGS="-C target-cpu=native" cargo build --release
+# (RUSTFLAGS overrides this file's rustflags entirely.)
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-C", "target-feature=+aes,+pclmulqdq",
+]

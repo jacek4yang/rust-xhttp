@@ -1,0 +1,58 @@
+# Rust build output
+/target/
+
+# All machine-local assets live under local/ (configs, secrets, deploy bundles,
+# reference checkouts, geo data, binaries, artifacts, caches, logs, scratch).
+# Ignore the whole tree except its README and init script. Use `/local/*` (not
+# `/local/`) so Git still descends into the dir and the negations below apply.
+/local/*
+!/local/README.md
+!/local/init.sh
+
+# Secrets, anywhere (defence in depth — these must never be tracked)
+/.env
+/.env.*
+!/.env.example
+!/.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Generated benchmark, profiling, and harness output
+/docs/benchmark-latest.md
+/docs/profile/
+/tests/harness/docker/artifacts/
+/coverage/
+/tarpaulin-report.html
+/cobertura.xml
+*.profraw
+*.profdata
+perf.data
+perf.data.old
+flamegraph.svg
+
+# Logs, process state, and temporary files
+*.log
+*.pid
+*.pid.lock
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# IDE and editor metadata
+/.idea/
+/.vscode/
+*.iml
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local AI assistant settings
+/.claude/
+/.codex/
+/.agents/

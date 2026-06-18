@@ -1,0 +1,66 @@
+# rust-xhttp example configuration.
+#
+# One binary serves three deployment shapes (direct TLS/H2, behind Cloudflare,
+# behind nginx). They differ ONLY in this file's [tls] section and listen
+# address — the XHTTP/VLESS wire protocol is identical. Ready-to-edit variants
+# live under `configs/{direct,plaintext,interop}/`.
+#
+# Copy to `config.toml` and run:  rust-xhttp config.toml
+
+[listen]
+# Direct / Cloudflare: bind 0.0.0.0:443 with [tls] below.
+# Behind a TLS-terminating proxy (nginx / CF tunnel): bind localhost and omit
+# [tls] to speak plaintext h2c upstream.
+addr = "0.0.0.0:8443"
+
+# Omit the whole [tls] table to serve plaintext HTTP/1.1 + h2c (upstream of a
+# proxy that terminates TLS). Present = terminate TLS here (TLS 1.3 + 1.2).
+[tls]
+cert = "certs/server.crt"
+key = "certs/server.key"
+alpn = ["h2", "http/1.1"]
+
+[xhttp]
+# Base path the XHTTP transport is mounted on (normalized to /.../ ). Must match
+# the client's `path`.
+path = "/xhttp/"
+# Optional Host pin ("" = accept any).
+host = ""
+# Xray scMaxEachPostBytes / scMaxBufferedPosts equivalents.
+max_each_post_bytes = 1000000
+max_buffered_posts = 30
+# Grace seconds before an un-GET'd session is reaped (Xray uses 30).
+session_grace_secs = 30
+# Emit `Content-Type: text/event-stream` on the download stream (middlebox hint).
+sse_header = true
+# Accepted x_padding length range (default method).
+padding_from = 100
+padding_to = 1000
+
+[vless]
+# VLESS-Encryption "decryption" string (mlkem768x25519plus.<mode>.<lifetime>.<keys>),
+# or "none" to disable. See configs/interop/server-encryption.toml for a full example.
+decryption = "none"
+
+[[vless.users]]
+id = "b831381d-6324-4d53-ad4f-8cda48b30811"
+email = "replace-me"
+# "" for plain VLESS, or "xtls-rprx-vision".
+flow = ""
+
+[limits]
+max_sessions = 65536
+max_pending_packets_per_session = 30
+max_pending_bytes_per_session = 16777216
+max_sessions_per_user = 4096
+global_buffer_bytes = 1073741824
+max_concurrent_target_conns = 100000
+session_idle_secs = 300
+handshake_timeout_secs = 10
+target_connect_secs = 10
+udp_association_idle_secs = 60
+
+[observability]
+# tracing EnvFilter directive, e.g. "info" or "info,rust_xhttp=debug".
+# Overridden by the RUST_LOG environment variable if set.
+log = "info"

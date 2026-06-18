@@ -1,0 +1,31 @@
+# cargo-deny policy. Run: `cargo deny check`
+#
+# All dependencies are permissive-licensed (MIT / Apache-2.0 / BSD / Unicode-3.0).
+# This allowlist is exactly the set present in the tree, so a new dependency under
+# any other license fails the check and must be reviewed.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[advisories]
+# RustSec advisory DB; fail on vulnerabilities, warn on unmaintained/yanked.
+yanked = "warn"
+
+[bans]
+# Duplicate versions are a warning (common in the wider ecosystem), not a failure.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
