@@ -36,6 +36,12 @@ sse_header = true
 # Accepted x_padding length range (default method).
 padding_from = 100
 padding_to = 1000
+# Packet-up payload placement. Xray default is "body"; "header", "cookie", and
+# "auto" are also accepted when the client is configured that way.
+uplink_data_placement = "body"
+# Required for non-body uplink_data_placement. Header mode uses KEY-0, KEY-1...
+# and cookie mode uses KEY_0, KEY_1... carrying base64url chunks.
+uplink_data_key = ""
 
 [vless]
 # VLESS-Encryption "decryption" string (mlkem768x25519plus.<mode>.<lifetime>.<keys>),

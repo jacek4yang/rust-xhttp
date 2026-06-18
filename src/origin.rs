@@ -1,6 +1,6 @@
 //! HTTP/1.1, HTTP/2 and TLS origin for XHTTP packet-up.
 
-use crate::config::{TlsConfig, XhttpConfig};
+use crate::config::{TlsConfig, UplinkDataPlacement, XhttpConfig};
 use crate::metrics::Metrics;
 use crate::session::{OpenDownload, PushResult, SessionTable};
 use crate::site;
@@ -9,6 +9,8 @@ use crate::xhttp::{
     classify, extract_meta_from_path, extract_padding, generate_response_padding, host_matches,
     is_padding_valid,
 };
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::{Bytes, BytesMut};
 use futures::stream;
 use http::{Method, Request, Response, StatusCode};
@@ -142,35 +144,35 @@ impl Origin {
         session_id: &str,
         seq: u64,
     ) -> Response<Body> {
-        if request
-            .body()
-            .size_hint()
-            .upper()
-            .is_some_and(|n| n > self.xhttp.max_each_post_bytes as u64)
-        {
-            self.metrics
-                .request_body_rejections
-                .fetch_add(1, Ordering::Relaxed);
-            return empty(StatusCode::PAYLOAD_TOO_LARGE);
-        }
-        let mut body = request.into_body();
+        let (parts, mut body) = request.into_parts();
         let mut payload = BytesMut::new();
-        while let Some(frame) = body.frame().await {
-            let Ok(frame) = frame else {
-                return empty(StatusCode::BAD_REQUEST);
-            };
-            if let Ok(data) = frame.into_data() {
-                let Some(total) = payload.len().checked_add(data.len()) else {
-                    return empty(StatusCode::PAYLOAD_TOO_LARGE);
-                };
-                if total > self.xhttp.max_each_post_bytes {
-                    self.metrics
-                        .request_body_rejections
-                        .fetch_add(1, Ordering::Relaxed);
-                    return empty(StatusCode::PAYLOAD_TOO_LARGE);
-                }
-                payload.extend_from_slice(&data);
+        match self.decode_header_payload(&parts.headers) {
+            Ok(header_payload) => payload.extend_from_slice(&header_payload),
+            Err(UploadPayloadError::InvalidBase64) => return empty(StatusCode::BAD_REQUEST),
+            Err(UploadPayloadError::TooLarge) => return self.reject_upload_too_large(),
+        }
+        match self.decode_cookie_payload(&parts.headers) {
+            Ok(cookie_payload) => payload.extend_from_slice(&cookie_payload),
+            Err(UploadPayloadError::InvalidBase64) => return empty(StatusCode::BAD_REQUEST),
+            Err(UploadPayloadError::TooLarge) => return self.reject_upload_too_large(),
+        }
+        if should_read_body(self.xhttp.uplink_data_placement) {
+            if body
+                .size_hint()
+                .upper()
+                .is_some_and(|n| n > self.xhttp.max_each_post_bytes as u64)
+            {
+                return self.reject_upload_too_large();
             }
+            let body_payload = match self.read_body_payload(&mut body).await {
+                Ok(payload) => payload,
+                Err(UploadPayloadError::InvalidBase64) => return empty(StatusCode::BAD_REQUEST),
+                Err(UploadPayloadError::TooLarge) => return self.reject_upload_too_large(),
+            };
+            payload.extend_from_slice(&body_payload);
+        }
+        if payload.len() > self.xhttp.max_each_post_bytes {
+            return self.reject_upload_too_large();
         }
         self.metrics
             .upload_bytes
@@ -180,7 +182,15 @@ impl Origin {
             .push_uplink(session_id, seq, payload.freeze())
             .await
         {
-            Some(PushResult::Accepted | PushResult::Duplicate) => empty(StatusCode::OK),
+            Some(PushResult::Accepted | PushResult::Duplicate) => {
+                let mut response = empty(StatusCode::OK);
+                if self.xhttp.uplink_data_placement != UplinkDataPlacement::Body {
+                    response
+                        .headers_mut()
+                        .insert(http::header::CACHE_CONTROL, "no-store".parse().unwrap());
+                }
+                response
+            }
             Some(PushResult::TooManyPending | PushResult::TooManyPendingBytes) => {
                 self.sessions.remove(session_id);
                 empty(StatusCode::INTERNAL_SERVER_ERROR)
@@ -193,6 +203,84 @@ impl Origin {
                 empty(StatusCode::SERVICE_UNAVAILABLE)
             }
         }
+    }
+
+    async fn read_body_payload(&self, body: &mut Incoming) -> Result<BytesMut, UploadPayloadError> {
+        let mut payload = BytesMut::new();
+        while let Some(frame) = body.frame().await {
+            let Ok(frame) = frame else {
+                return Err(UploadPayloadError::InvalidBase64);
+            };
+            if let Ok(data) = frame.into_data() {
+                let Some(total) = payload.len().checked_add(data.len()) else {
+                    return Err(UploadPayloadError::TooLarge);
+                };
+                if total > self.xhttp.max_each_post_bytes {
+                    return Err(UploadPayloadError::TooLarge);
+                }
+                payload.extend_from_slice(&data);
+            }
+        }
+        Ok(payload)
+    }
+
+    fn decode_header_payload(
+        &self,
+        headers: &http::HeaderMap,
+    ) -> Result<Vec<u8>, UploadPayloadError> {
+        if !matches!(
+            self.xhttp.uplink_data_placement,
+            UplinkDataPlacement::Header | UplinkDataPlacement::Auto
+        ) {
+            return Ok(Vec::new());
+        }
+        let mut encoded = String::new();
+        for i in 0.. {
+            let key = format!("{}-{i}", self.xhttp.uplink_data_key);
+            let Some(value) = headers.get(&key) else {
+                break;
+            };
+            encoded.push_str(
+                value
+                    .to_str()
+                    .map_err(|_| UploadPayloadError::InvalidBase64)?,
+            );
+            if encoded.len() > encoded_len_limit(self.xhttp.max_each_post_bytes) {
+                return Err(UploadPayloadError::TooLarge);
+            }
+        }
+        decode_payload_chunks(&encoded, self.xhttp.max_each_post_bytes)
+    }
+
+    fn decode_cookie_payload(
+        &self,
+        headers: &http::HeaderMap,
+    ) -> Result<Vec<u8>, UploadPayloadError> {
+        if !matches!(
+            self.xhttp.uplink_data_placement,
+            UplinkDataPlacement::Cookie | UplinkDataPlacement::Auto
+        ) {
+            return Ok(Vec::new());
+        }
+        let mut encoded = String::new();
+        for i in 0.. {
+            let key = format!("{}_{i}", self.xhttp.uplink_data_key);
+            let Some(value) = cookie_value(headers, &key) else {
+                break;
+            };
+            encoded.push_str(&value);
+            if encoded.len() > encoded_len_limit(self.xhttp.max_each_post_bytes) {
+                return Err(UploadPayloadError::TooLarge);
+            }
+        }
+        decode_payload_chunks(&encoded, self.xhttp.max_each_post_bytes)
+    }
+
+    fn reject_upload_too_large(&self) -> Response<Body> {
+        self.metrics
+            .request_body_rejections
+            .fetch_add(1, Ordering::Relaxed);
+        empty(StatusCode::PAYLOAD_TOO_LARGE)
     }
 
     fn download(&self, session_id: &str) -> Response<Body> {
@@ -273,6 +361,54 @@ impl Origin {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadPayloadError {
+    InvalidBase64,
+    TooLarge,
+}
+
+fn should_read_body(placement: UplinkDataPlacement) -> bool {
+    matches!(
+        placement,
+        UplinkDataPlacement::Body | UplinkDataPlacement::Auto
+    )
+}
+
+fn encoded_len_limit(decoded_limit: usize) -> usize {
+    decoded_limit.saturating_mul(4).saturating_add(2) / 3 + 4
+}
+
+fn decode_payload_chunks(encoded: &str, limit: usize) -> Result<Vec<u8>, UploadPayloadError> {
+    if encoded.is_empty() {
+        return Ok(Vec::new());
+    }
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| UploadPayloadError::InvalidBase64)?;
+    if decoded.len() > limit {
+        return Err(UploadPayloadError::TooLarge);
+    }
+    Ok(decoded)
+}
+
+fn cookie_value(headers: &http::HeaderMap, key: &str) -> Option<String> {
+    for value in headers.get_all(http::header::COOKIE) {
+        let Ok(raw) = value.to_str() else {
+            continue;
+        };
+        for part in raw.split(';') {
+            let part = part.trim();
+            let Some((name, value)) = part.split_once('=') else {
+                continue;
+            };
+            if name == key {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
 struct DownloadState {
     reader: crate::session::DownlinkReader,
     sessions: Arc<SessionTable>,
@@ -349,6 +485,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn test_origin() -> Origin {
+        test_origin_with_placement(UplinkDataPlacement::Body)
+    }
+
+    fn test_origin_with_placement(placement: UplinkDataPlacement) -> Origin {
         let xhttp = XhttpConfig {
             path: "/xhttp/".into(),
             host: "example.com".into(),
@@ -359,6 +499,13 @@ mod tests {
             max_header_bytes: 512,
             padding_from: 100,
             padding_to: 100,
+            uplink_data_placement: placement,
+            uplink_data_key: match placement {
+                UplinkDataPlacement::Body => String::new(),
+                UplinkDataPlacement::Header
+                | UplinkDataPlacement::Cookie
+                | UplinkDataPlacement::Auto => "X-Data".into(),
+            },
         };
         let metrics = Metrics::new();
         let handler: Handler = Arc::new(|_| {});
@@ -474,6 +621,65 @@ mod tests {
         assert!(
             response.starts_with("HTTP/1.1 431 Request Header Fields Too Large"),
             "response was:\n{response}"
+        );
+    }
+
+    #[test]
+    fn decodes_header_payload_chunks() {
+        let origin = test_origin_with_placement(UplinkDataPlacement::Header);
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-data-0", "aGVs".parse().unwrap());
+        headers.insert("x-data-1", "bG8".parse().unwrap());
+
+        assert_eq!(
+            origin.decode_header_payload(&headers).unwrap(),
+            b"hello".to_vec()
+        );
+        assert!(origin.decode_cookie_payload(&headers).unwrap().is_empty());
+    }
+
+    #[test]
+    fn decodes_cookie_payload_chunks() {
+        let origin = test_origin_with_placement(UplinkDataPlacement::Cookie);
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::COOKIE,
+            "other=1; X-Data_0=d29y; X-Data_1=bGQ".parse().unwrap(),
+        );
+
+        assert_eq!(
+            origin.decode_cookie_payload(&headers).unwrap(),
+            b"world".to_vec()
+        );
+        assert!(origin.decode_header_payload(&headers).unwrap().is_empty());
+    }
+
+    #[test]
+    fn auto_payload_concatenates_header_cookie_and_body_layers() {
+        let origin = test_origin_with_placement(UplinkDataPlacement::Auto);
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-data-0", "aGVh".parse().unwrap());
+        headers.insert(http::header::COOKIE, "X-Data_0=ZGVy".parse().unwrap());
+
+        assert_eq!(
+            origin.decode_header_payload(&headers).unwrap(),
+            b"hea".to_vec()
+        );
+        assert_eq!(
+            origin.decode_cookie_payload(&headers).unwrap(),
+            b"der".to_vec()
+        );
+    }
+
+    #[test]
+    fn rejects_bad_encoded_payload_chunks() {
+        let origin = test_origin_with_placement(UplinkDataPlacement::Header);
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-data-0", "not valid base64!".parse().unwrap());
+
+        assert_eq!(
+            origin.decode_header_payload(&headers),
+            Err(UploadPayloadError::InvalidBase64)
         );
     }
 }

@@ -14,6 +14,13 @@ The supported mode is packet-up: independent upload POSTs carrying sequence
 numbers, plus a long-lived stream-down GET for responses. Stream-up and
 stream-one are classified but rejected by policy.
 
+Packet-up payloads support Xray's default `body` placement plus the optional
+`header`, `cookie`, and `auto` placements. Header chunks are read from
+`<uplink_data_key>-0`, `<uplink_data_key>-1`, ... and cookie chunks are read
+from `<uplink_data_key>_0`, `<uplink_data_key>_1`, ... using Xray's raw
+base64url encoding. `auto` concatenates header, cookie, and body payloads in
+that order, matching the local Xray-core server path.
+
 ## VLESS
 
 The server accepts VLESS TCP, UDP, Mux/XUDP, Vision, and optional

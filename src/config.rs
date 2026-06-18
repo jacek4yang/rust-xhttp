@@ -80,6 +80,24 @@ pub struct XhttpConfig {
     /// Maximum accepted XHTTP padding length.
     #[serde(default = "default_padding_to")]
     pub padding_to: u32,
+    /// Where packet-up payload bytes are carried. Mirrors Xray
+    /// `uplinkDataPlacement`; default is body.
+    #[serde(default)]
+    pub uplink_data_placement: UplinkDataPlacement,
+    /// Key prefix for header/cookie packet-up payload chunks. Required when
+    /// `uplink_data_placement` is header, cookie, or auto.
+    #[serde(default)]
+    pub uplink_data_key: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum UplinkDataPlacement {
+    #[default]
+    Body,
+    Header,
+    Cookie,
+    Auto,
 }
 
 fn default_max_each_post_bytes() -> usize {
@@ -275,6 +293,13 @@ impl Config {
                 "xhttp padding range must satisfy 0 < padding_from <= padding_to".into(),
             ));
         }
+        if self.xhttp.uplink_data_placement != UplinkDataPlacement::Body
+            && self.xhttp.uplink_data_key.is_empty()
+        {
+            return Err(ConfigError::Invalid(
+                "xhttp.uplink_data_key is required unless uplink_data_placement is \"body\"".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -303,6 +328,7 @@ mod tests {
         assert_eq!(cfg.xhttp.path, "/yourpath/");
         assert_eq!(cfg.xhttp.max_each_post_bytes, 1_000_000);
         assert_eq!(cfg.xhttp.max_buffered_posts, 30);
+        assert_eq!(cfg.xhttp.uplink_data_placement, UplinkDataPlacement::Body);
         assert_eq!(cfg.limits.session_idle_secs, 300);
         assert_eq!(cfg.vless.users.len(), 1);
     }
@@ -324,5 +350,25 @@ mod tests {
             users = []
         "#;
         assert!(Config::from_toml_str(s).is_err());
+    }
+
+    #[test]
+    fn parses_header_uplink_placement_with_key() {
+        let s = SAMPLE.replace(
+            "path = \"yourpath\"",
+            "path = \"yourpath\"\nuplink_data_placement = \"header\"\nuplink_data_key = \"X-Data\"",
+        );
+        let cfg = Config::from_toml_str(&s).unwrap();
+        assert_eq!(cfg.xhttp.uplink_data_placement, UplinkDataPlacement::Header);
+        assert_eq!(cfg.xhttp.uplink_data_key, "X-Data");
+    }
+
+    #[test]
+    fn rejects_non_body_uplink_without_key() {
+        let s = SAMPLE.replace(
+            "path = \"yourpath\"",
+            "path = \"yourpath\"\nuplink_data_placement = \"cookie\"",
+        );
+        assert!(Config::from_toml_str(&s).is_err());
     }
 }

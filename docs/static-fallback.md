@@ -38,6 +38,8 @@ strict Xray-compatible path for real clients.
   origin and checks XHTTP response padding on upload and download responses.
 - `scripts/m9_tls_h2_smoke.sh` validates a local TLS origin with ALPN `h2`,
   static fallback shape, and XHTTP OPTIONS response padding.
+- `scripts/m10_uplink_placements.sh` validates Xray-compatible packet-up
+  payload placement for `header`, `cookie`, and `auto`.
 
 ## TLS boundary
 
