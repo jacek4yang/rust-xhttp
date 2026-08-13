@@ -1,6 +1,6 @@
 [package]
 name = "rust-xhttp"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Pure-Rust XHTTP/VLESS server wire-compatible with the official Xray-core client (XHTTP packet-up + VLESS + VLESS-Encryption + Vision + XUDP)"
@@ -22,6 +22,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "rust-xhttp"
 path = "src/main.rs"
+
+[[bin]]
+name = "rust-xhttpctl"
+path = "src/bin/rust-xhttpctl.rs"
 
 [dependencies]
 # async runtime / io

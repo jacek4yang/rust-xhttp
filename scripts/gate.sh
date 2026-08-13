@@ -24,4 +24,7 @@ cargo clippy --all-targets -- -D warnings
 step "test"
 cargo test --quiet -- --test-threads=1
 
+step "installer"
+scripts/m14_installer_smoke.sh
+
 printf '\n\033[1;32mGATE PASSED\033[0m\n'

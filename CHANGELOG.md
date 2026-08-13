@@ -6,6 +6,34 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-14
+
+### Added
+
+- Added the separate Rust `rust-xhttpctl` interactive installer and lifecycle
+  manager for systemd installation, status/log access, diagnosis, transactional
+  config editing, repair, update, rollback, and preserve-or-purge uninstall.
+- Added a version-pinned one-command bootstrap that verifies the GitHub Release
+  SHA-256 before starting the Rust wizard.
+- Added bilingual installation and long-term management documentation plus an
+  alternate-root installer smoke test in the required quality gate.
+
+### Changed
+
+- Run managed deployments as a dedicated non-login user with stable `/etc`,
+  `/usr/local/bin`, and `/var/lib` paths instead of a root-owned working tree.
+- Package both the daemon and manager, the pinned bootstrap, configuration
+  examples, and bilingual documentation in every Linux release archive.
+
+### Security
+
+- Hardened the canonical systemd unit with config preflight, a read-only system,
+  home/device isolation, restricted address families, and only
+  `CAP_NET_BIND_SERVICE`.
+- Online updates enforce HTTPS-only redirects, validated tags/archive paths,
+  matching binary versions, published SHA-256 verification, config preflight,
+  atomic replacement, and automatic failed-activation rollback.
+
 ## [0.1.1] - 2026-08-14
 
 ### Changed
@@ -40,4 +68,5 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 [0.1.0]: https://github.com/jacek4yang/rust-xhttp/releases/tag/v0.1.0
 [0.1.1]: https://github.com/jacek4yang/rust-xhttp/compare/v0.1.0...v0.1.1
-[Unreleased]: https://github.com/jacek4yang/rust-xhttp/compare/v0.1.1...HEAD
+[0.2.0]: https://github.com/jacek4yang/rust-xhttp/compare/v0.1.1...v0.2.0
+[Unreleased]: https://github.com/jacek4yang/rust-xhttp/compare/v0.2.0...HEAD

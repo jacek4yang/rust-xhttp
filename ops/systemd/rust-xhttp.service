@@ -1,7 +1,4 @@
 [Unit]
-# Production systemd unit for rust-xhttp (x86_64 Linux).
-# Install: see ops/deploy.sh, or copy to /etc/systemd/system/ and
-#   systemctl daemon-reload && systemctl enable --now rust-xhttp
 Description=rust-xhttp XHTTP/VLESS server
 Documentation=https://github.com/jacek4yang/rust-xhttp
 After=network-online.target
@@ -11,16 +8,18 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-# The binary resolves its config path relative to the working directory.
-WorkingDirectory=/root/xhttp
-ExecStart=/root/xhttp/rust-xhttp config.json
-Restart=always
+User=rust-xhttp
+Group=rust-xhttp
+WorkingDirectory=/var/lib/rust-xhttp
+ExecStartPre=/usr/local/bin/rust-xhttp check /etc/rust-xhttp/config.json
+ExecStart=/usr/local/bin/rust-xhttp /etc/rust-xhttp/config.json
+Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=35s
-StateDirectory=rust-xhttp
-StateDirectoryMode=0700
+UMask=0027
 
 LimitNOFILE=65536
+LimitCORE=0
 MemoryHigh=1536M
 MemoryMax=2G
 StandardOutput=journal
@@ -28,20 +27,23 @@ StandardError=journal
 SyslogIdentifier=rust-xhttp
 
 NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=false
-ReadWritePaths=/root/xhttp /var/lib/rust-xhttp
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/rust-xhttp
+ReadWritePaths=/var/lib/rust-xhttp
 PrivateTmp=true
+PrivateDevices=true
+ProtectHostname=true
 ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-# Disable core dumps so key material is never written to disk.
-LimitCORE=0
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

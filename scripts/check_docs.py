@@ -16,6 +16,7 @@ REQUIRED_PAIRS = (
     ("SECURITY.md", "SECURITY.zh-CN.md"),
     ("docs/index.md", "docs/index.zh-CN.md"),
     ("docs/configuration.md", "docs/configuration.zh-CN.md"),
+    ("docs/installation-management.md", "docs/installation-management.zh-CN.md"),
     ("docs/benchmarks.md", "docs/benchmarks.zh-CN.md"),
     (
         "docs/performance-and-availability.md",
