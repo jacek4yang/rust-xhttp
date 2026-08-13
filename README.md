@@ -139,4 +139,5 @@ welcome under [`CONTRIBUTING.md`](CONTRIBUTING.md).
 | Configuration and deployment | [English](docs/configuration.md) | [简体中文](docs/configuration.zh-CN.md) |
 | Benchmarks and evidence | [English](docs/benchmarks.md) | [简体中文](docs/benchmarks.zh-CN.md) |
 | Performance and availability | [English](docs/performance-and-availability.md) | [简体中文](docs/performance-and-availability.zh-CN.md) |
+| Hotspot optimization report | [English](docs/performance-hotspots.md) | [简体中文](docs/performance-hotspots.zh-CN.md) |
 | Security policy | [English](SECURITY.md) | [简体中文](SECURITY.zh-CN.md) |

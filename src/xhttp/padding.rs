@@ -8,8 +8,44 @@
 //! Validation: empty → invalid (Go returns 400). Default method compares the raw character
 //! length against the configured `[from, to]` byte range (default 100..=1000).
 
-use http::{HeaderMap, Uri};
+use bytes::Bytes;
+use http::{HeaderMap, HeaderValue, Uri};
 use rand::Rng;
+use std::sync::OnceLock;
+
+const MAX_CACHED_LENGTHS: usize = 2048;
+
+/// Lazily cached response-padding header values.
+///
+/// The default XHTTP range has 901 possible lengths. Caching each value after its first
+/// use removes both the padding allocation and HeaderValue parsing from the request path,
+/// while retaining Xray's uniform random length distribution. Very wide custom ranges use
+/// a one-allocation fallback to keep startup and resident memory bounded.
+pub struct ResponsePadding {
+    from: u32,
+    to: u32,
+    cache: Option<Box<[OnceLock<HeaderValue>]>>,
+}
+
+impl ResponsePadding {
+    pub fn new(from: u32, to: u32) -> Self {
+        let width = to.saturating_sub(from) as usize + 1;
+        let cache =
+            (width <= MAX_CACHED_LENGTHS).then(|| (0..width).map(|_| OnceLock::new()).collect());
+        Self { from, to, cache }
+    }
+
+    #[inline]
+    pub fn header_value(&self) -> HeaderValue {
+        let len = random_length(self.from, self.to);
+        if let Some(cache) = &self.cache {
+            return cache[(len - self.from) as usize]
+                .get_or_init(|| padding_header_value(len))
+                .clone();
+        }
+        padding_header_value(len)
+    }
+}
 
 /// Pull the padding value the client sent, mirroring the non-obfs branch.
 /// Returns the value (possibly empty) — the caller validates length.
@@ -28,6 +64,21 @@ pub fn extract_padding(headers: &HeaderMap, uri: &Uri) -> String {
     String::new()
 }
 
+/// Return the percent-decoded padding byte length without allocating the padding value.
+/// The request path only needs this length for validation.
+pub fn extract_padding_len(headers: &HeaderMap, uri: &Uri) -> Option<usize> {
+    if let Some(referer) = headers
+        .get(http::header::REFERER)
+        .and_then(|value| value.to_str().ok())
+        && !referer.is_empty()
+    {
+        return query_value_ref(referer, "x_padding").map(percent_decoded_len);
+    }
+    uri.query()
+        .and_then(|query| query_param_ref(query, "x_padding"))
+        .map(percent_decoded_len)
+}
+
 /// Default-method validity: non-empty and raw length within `[from, to]`.
 pub fn is_padding_valid(value: &str, from: u32, to: u32) -> bool {
     if value.is_empty() {
@@ -37,34 +88,85 @@ pub fn is_padding_valid(value: &str, from: u32, to: u32) -> bool {
     n >= from && n <= to
 }
 
+#[inline]
+pub fn is_padding_len_valid(value: Option<usize>, from: u32, to: u32) -> bool {
+    value.is_some_and(|len| len != 0 && len >= from as usize && len <= to as usize)
+}
+
 /// Generate default response padding, mirroring Xray's non-obfs `X-Padding`
 /// response header placement and repeat-x padding method.
 pub fn generate_response_padding(from: u32, to: u32) -> String {
-    let len = if from >= to {
+    let len = random_length(from, to);
+    "X".repeat(len as usize)
+}
+
+#[inline]
+fn random_length(from: u32, to: u32) -> u32 {
+    if from >= to {
         from
     } else {
         rand::thread_rng().gen_range(from..=to)
-    };
-    "X".repeat(len as usize)
+    }
+}
+
+fn padding_header_value(len: u32) -> HeaderValue {
+    let bytes = Bytes::from(vec![b'X'; len as usize]);
+    HeaderValue::from_maybe_shared(bytes).expect("X padding is always a valid header value")
 }
 
 /// Parse a full URL string and return the value of query `key`.
 fn query_value(url: &str, key: &str) -> Option<String> {
-    let q = url.split_once('?').map(|(_, q)| q)?;
-    // strip a possible fragment
-    let q = q.split('#').next().unwrap_or(q);
-    query_param(q, key)
+    query_value_ref(url, key).map(percent_decode)
 }
 
 /// Find `key` in a raw `a=b&c=d` query string, with minimal percent-decoding.
 fn query_param(query: &str, key: &str) -> Option<String> {
+    query_param_ref(query, key).map(percent_decode)
+}
+
+fn query_value_ref<'a>(url: &'a str, key: &str) -> Option<&'a str> {
+    let query = url.split_once('?').map(|(_, query)| query)?;
+    let query = query.split('#').next().unwrap_or(query);
+    query_param_ref(query, key)
+}
+
+fn query_param_ref<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     for pair in query.split('&') {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         if k == key {
-            return Some(percent_decode(v));
+            return Some(v);
         }
     }
     None
+}
+
+fn percent_decoded_len(value: &str) -> usize {
+    let bytes = value.as_bytes();
+    let mut decoded_len = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && hex_value(bytes[index + 1]).is_some()
+            && hex_value(bytes[index + 2]).is_some()
+        {
+            index += 3;
+        } else {
+            index += 1;
+        }
+        decoded_len += 1;
+    }
+    decoded_len
+}
+
+#[inline]
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Minimal percent-decode (enough for padding values, which are X/Z/base62 + maybe '%').
@@ -119,6 +221,7 @@ mod tests {
         assert_eq!(v, "XXXXXXXXXX");
         assert!(is_padding_valid(&v, 5, 20));
         assert!(!is_padding_valid(&v, 50, 100));
+        assert_eq!(extract_padding_len(&h, &uri("/p/s/1")), Some(10));
     }
 
     #[test]
@@ -141,5 +244,25 @@ mod tests {
             assert!(v.bytes().all(|b| b == b'X'));
         }
         assert_eq!(generate_response_padding(5, 5), "XXXXX");
+    }
+
+    #[test]
+    fn padding_length_decodes_without_materializing_value() {
+        let h = HeaderMap::new();
+        let target = uri("/p/s/1?before=x&x_padding=X%58+Z&after=y");
+        assert_eq!(extract_padding_len(&h, &target), Some(4));
+        assert!(is_padding_len_valid(Some(4), 4, 4));
+        assert!(!is_padding_len_valid(None, 1, 4));
+        assert!(!is_padding_len_valid(Some(0), 0, 4));
+    }
+
+    #[test]
+    fn response_padding_cache_preserves_range() {
+        let padding = ResponsePadding::new(4, 8);
+        for _ in 0..64 {
+            let value = padding.header_value();
+            assert!((4..=8).contains(&value.as_bytes().len()));
+            assert!(value.as_bytes().iter().all(|byte| *byte == b'X'));
+        }
     }
 }

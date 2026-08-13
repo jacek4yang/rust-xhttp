@@ -5,6 +5,8 @@
 This note explains the current hot path, resource model, failure behavior, and
 measurement limits. It complements the committed Xray comparison in
 [Benchmarks](benchmarks.md).
+The sampling method, allocation changes, and current microbenchmark evidence are
+recorded in the [hotspot optimization report](performance-hotspots.md).
 
 ## Hot-path design
 
@@ -15,6 +17,12 @@ measurement limits. It complements the committed Xray comparison in
   precomputed. Conditional GETs return 304 without reading a file.
 - The session table is sharded, and counters are relaxed atomics. Target
   concurrency uses a semaphore rather than unbounded task creation.
+- Request path/session metadata is borrowed from parsed HTTP values. Single-frame
+  body uploads remain reference-counted `Bytes`, response padding is lazily cached,
+  and user-table reads use `ArcSwap` rather than a read lock.
+- Download-created sessions skip orphan grace timers entirely; timers created for
+  upload-first sessions are cancelled as soon as the download opens or the session
+  ends. This prevents completed sessions from retaining timer tasks for the full TTL.
 - Packet reorder queues and per-session/global byte budgets reserve capacity
   before accepting payload memory. Oversized work fails early.
 - TCP_NODELAY, keepalive, a 4096 listen backlog, and `SO_REUSEPORT` are enabled

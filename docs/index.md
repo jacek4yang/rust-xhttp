@@ -14,6 +14,7 @@ VLESS-Encryption, verification, and troubleshooting.
 | Configuration and deployment | [English](configuration.md) | [简体中文](configuration.zh-CN.md) |
 | Benchmarks and raw evidence | [English](benchmarks.md) | [简体中文](benchmarks.zh-CN.md) |
 | Performance and availability | [English](performance-and-availability.md) | [简体中文](performance-and-availability.zh-CN.md) |
+| Hotspot optimization report | [English](performance-hotspots.md) | [简体中文](performance-hotspots.zh-CN.md) |
 | Security policy | [English](../SECURITY.md) | [简体中文](../SECURITY.zh-CN.md) |
 
 ## Engineering notes

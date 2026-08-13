@@ -21,6 +21,7 @@ REQUIRED_PAIRS = (
         "docs/performance-and-availability.md",
         "docs/performance-and-availability.zh-CN.md",
     ),
+    ("docs/performance-hotspots.md", "docs/performance-hotspots.zh-CN.md"),
 )
 
 

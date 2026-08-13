@@ -7,8 +7,9 @@
 //! processed id to avoid leaking near-miss timing. The table is swapped atomically on reload,
 //! so a config reload never tears down in-flight sessions and never takes a data-path lock.
 
+use arc_swap::ArcSwap;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 #[derive(Debug, Clone)]
@@ -19,12 +20,12 @@ pub struct User {
 }
 
 struct Inner {
-    by_id: HashMap<[u8; 16], User>,
+    by_id: HashMap<[u8; 16], Arc<User>>,
 }
 
 #[derive(Clone)]
 pub struct Validator {
-    inner: Arc<RwLock<Arc<Inner>>>,
+    inner: Arc<ArcSwap<Inner>>,
 }
 
 /// Zero bytes [6] and [7] (Xray `ProcessUUID`).
@@ -39,10 +40,10 @@ impl Validator {
         let mut by_id = HashMap::new();
         for mut u in users {
             u.id = process_uuid(u.id);
-            by_id.insert(u.id, u);
+            by_id.insert(u.id, Arc::new(u));
         }
         Self {
-            inner: Arc::new(RwLock::new(Arc::new(Inner { by_id }))),
+            inner: Arc::new(ArcSwap::from_pointee(Inner { by_id })),
         }
     }
 
@@ -51,26 +52,32 @@ impl Validator {
         let mut by_id = HashMap::new();
         for mut u in users {
             u.id = process_uuid(u.id);
-            by_id.insert(u.id, u);
+            by_id.insert(u.id, Arc::new(u));
         }
-        *self.inner.write().unwrap() = Arc::new(Inner { by_id });
+        self.inner.store(Arc::new(Inner { by_id }));
     }
 
-    /// Look up a user by the *raw* request UUID. Returns the matched user or None.
+    /// Look up a user by the *raw* request UUID. Retained as an owned result for API
+    /// compatibility; the server hot path uses [`Self::get_shared`].
     pub fn get(&self, raw_id: &[u8; 16]) -> Option<User> {
+        self.get_shared(raw_id).map(|user| user.as_ref().clone())
+    }
+
+    /// Lock-free lookup that shares immutable user metadata without cloning strings.
+    pub fn get_shared(&self, raw_id: &[u8; 16]) -> Option<Arc<User>> {
         let key = process_uuid(*raw_id);
-        let snap = self.inner.read().unwrap().clone();
+        let snap = self.inner.load();
         let candidate = snap.by_id.get(&key)?;
         // constant-time confirm on the processed id
         if candidate.id.ct_eq(&key).into() {
-            Some(candidate.clone())
+            Some(Arc::clone(candidate))
         } else {
             None
         }
     }
 
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().by_id.len()
+        self.inner.load().by_id.len()
     }
 
     pub fn is_empty(&self) -> bool {
