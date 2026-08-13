@@ -1,24 +1,33 @@
 # Production Hardening
 
-First complete the [configuration guide](configuration.md), then use the
-systemd unit at `ops/systemd/rust-xhttp.service`:
+The recommended local setup is the Rust
+[interactive installer and manager](installation-management.md). For deploying
+a locally built release to one or more already configured root SSH targets:
 
 ```bash
 ops/deploy.sh root@server
 ```
 
-The script atomically replaces the binary and restarts the service. It does not
-modify the remote JSON, website, certificate, or private keys.
+Each target must already contain `/etc/rust-xhttp/config.json`. The script sends
+both locally built binaries and asks `rust-xhttpctl` to validate the existing
+config, install the canonical unit, and restart. It does not replace website,
+certificate, or ACME data.
 
 ## Remote layout
 
 ```text
-/root/xhttp/
-  config.json
+/usr/local/bin/
   rust-xhttp
-  rust-xhttp.old
+  rust-xhttpctl
+/etc/rust-xhttp/
+  config.json
+  backups/
+  tls/
 /var/lib/rust-xhttp/
-  acme/                 # only when automatic certificates are enabled
+  acme/
+  site/
+/var/lib/rust-xhttp-manager/
+  rollback/             # previous daemon + manager pair
 ```
 
 ## Runtime notes
@@ -35,9 +44,10 @@ modify the remote JSON, website, certificate, or private keys.
   system overhead. Do not increase concurrency limits independently.
 - `workers: 0`, `reusePort: true`, `backlog: 4096`, and 300-second keepalive
   are intended Linux defaults. Measure before changing worker count.
-- Put a user `dist` directory under a service-readable path and keep it
-  immutable at runtime. ACME cache is the only normal runtime write path.
-- Use `rust-xhttp check config.json` in deployment automation before restart.
+- The service runs as a dedicated non-login user. Put custom `dist` content in
+  `/var/lib/rust-xhttp/site`; the installer copies and preloads it there.
+- Use `rust-xhttp check /etc/rust-xhttp/config.json` in deployment automation
+  before restart. `ExecStartPre` enforces the same check in systemd.
 - Monitor SIGTERM drain, accept-pressure warnings, buffer/session rejections,
   target timeouts, certificate expiry, and ACME renewal failures.
 

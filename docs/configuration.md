@@ -68,8 +68,8 @@ Requirements:
 - Public TCP port 80 must reach `challengeListen`; HTTP-01 cannot issue wildcard
   certificates.
 - The process needs permission to bind ports 80/443 and write `cacheDir`. The
-  supplied systemd unit grants `CAP_NET_BIND_SERVICE` and creates
-  `/var/lib/rust-xhttp` with mode `0700`.
+  managed systemd unit grants `CAP_NET_BIND_SERVICE`; `rust-xhttpctl` creates
+  the service-owned state directory and a mode-`0700` ACME directory.
 - `acceptTerms` is deliberately required. Setting it to `false` rejects the
   config.
 

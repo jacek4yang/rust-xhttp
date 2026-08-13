@@ -64,8 +64,9 @@ UUID、XHTTP 路径和 Host。核心配置为：
 
 - `domains` 中所有域名必须已解析到本机；
 - 公网 TCP 80 必须能到达 `challengeListen`；HTTP-01 不支持通配符证书；
-- 进程要有 80/443 端口绑定权限和 `cacheDir` 写权限。仓库提供的 systemd unit
-  会授予 `CAP_NET_BIND_SERVICE`，并以 `0700` 创建 `/var/lib/rust-xhttp`；
+- 进程要有 80/443 端口绑定权限和 `cacheDir` 写权限。托管 systemd unit 会授予
+  `CAP_NET_BIND_SERVICE`；`rust-xhttpctl` 创建服务状态目录和权限为 `0700` 的
+  ACME 目录；
 - 必须显式设置 `acceptTerms: true`，否则配置校验失败。
 
 80 端口只在 `/.well-known/acme-challenge/` 返回 ACME token，其余 HTTP 请求永久
