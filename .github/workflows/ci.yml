@@ -21,6 +21,12 @@ jobs:
         run: scripts/gate.sh
       - name: Verify package
         run: cargo package --locked
+      - name: Remove package staging directory
+        if: always()
+        run: |
+          if [ -d target/package ]; then
+            rm -r -- target/package
+          fi
 
   dependencies:
     runs-on: ubuntu-24.04
