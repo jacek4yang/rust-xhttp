@@ -47,7 +47,7 @@ arc-swap = "1.7"
 blake3 = "1.5"
 x25519-dalek = { version = "2.0", features = ["static_secrets", "zeroize"] }
 ml-kem = { version = "0.2", features = ["deterministic", "zeroize"] }
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 chacha20poly1305 = "0.10"
 aes = "0.8"
 ctr = "0.9"
