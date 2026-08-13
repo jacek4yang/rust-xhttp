@@ -45,6 +45,7 @@ pub struct SessionConfig {
     pub max_sessions: usize,
     pub max_pending_packets: usize,
     pub max_pending_bytes: usize,
+    pub global_buffer_budget: Option<crate::buffer::MemoryBudget>,
     pub downlink_capacity: usize,
     pub grace: Duration,
 }
@@ -56,6 +57,7 @@ impl Default for SessionConfig {
             max_sessions: 65536,
             max_pending_packets: 30,
             max_pending_bytes: 16 * 1024 * 1024,
+            global_buffer_budget: None,
             downlink_capacity: 32,
             grace: Duration::from_secs(30),
         }
@@ -186,10 +188,11 @@ impl SessionTable {
         // out-of-order bound = max_pending_packets; in-order channel depth bounds in-flight
         // chunks (backpressure). Depth is capped so a flood cannot pre-buffer unboundedly.
         let depth = self.cfg.max_pending_packets.clamp(1, 256);
-        let (sink, reader) = reorder::channel(
+        let (sink, reader) = reorder::channel_with_budget(
             self.cfg.max_pending_packets,
             self.cfg.max_pending_bytes,
             depth,
+            self.cfg.global_buffer_budget.clone(),
         );
         let (dl_sink, dl_reader) = downlink::channel(self.cfg.downlink_capacity);
         let session = Arc::new(Session {

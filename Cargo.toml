@@ -5,7 +5,11 @@ edition = "2024"
 rust-version = "1.85"
 description = "Pure-Rust XHTTP/VLESS server wire-compatible with the official Xray-core client (XHTTP packet-up + VLESS + VLESS-Encryption + Vision + XUDP)"
 license = "MPL-2.0"
-repository = "local"
+repository = "https://github.com/jacek4yang/rust-xhttp"
+homepage = "https://github.com/jacek4yang/rust-xhttp"
+readme = "README.md"
+keywords = ["xhttp", "vless", "xray", "proxy", "http2"]
+categories = ["network-programming", "web-programming::http-server"]
 
 # This crate is a clean-room-by-spec port of several MPL-2.0 packages from
 # Xray-core (proxy/vless, transport/internet/splithttp, common/xudp). The MPL
@@ -24,17 +28,13 @@ path = "src/main.rs"
 tokio = { version = "1.40", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal"] }
 bytes = "1.7"
 futures = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
 
 # http
 hyper = { version = "1.4", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2"] }
 http = "1.1"
 http-body-util = "0.1"
-
-# tls
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-rustls-pemfile = "2.1"
 
 # crypto
 blake3 = "1.5"
@@ -44,6 +44,10 @@ aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 aes = "0.8"
 ctr = "0.9"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+ring = "0.17"
 base64 = "0.22"
 rand = "0.8"
 rand_core = "0.6"

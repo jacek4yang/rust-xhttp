@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible rust-xhttp problem
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: For vulnerabilities, stop here and follow SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment mode
+      options:
+        - Direct TLS
+        - Cloudflare
+        - Behind nginx
+        - Plaintext local test
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include sanitized config, commands, expected behavior, and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove UUIDs, hosts, credentials, private keys, and user traffic.
+      render: text

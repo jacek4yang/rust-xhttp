@@ -1,0 +1,23 @@
+# Changelog
+
+All notable changes to this project are documented in this file. The format is
+based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases
+follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - 2026-08-13
+
+### Added
+
+- XHTTP packet-up transport with body, header, cookie, and auto payload placement.
+- VLESS TCP, UDP, XUDP, `xtls-rprx-vision`, and VLESS-Encryption server support.
+- Direct in-tree TLS 1.3 termination with HTTP/2 and HTTP/1.1 ALPN.
+- Cloudflare/nginx plaintext-origin deployment mode and nginx-shaped static fallback.
+- Bounded session reorder queues, global upload-buffer accounting, socket tuning,
+  operational scripts, protocol documentation, and compatibility benchmarks.
+
+### Security
+
+- Enforced TLS/VLESS handshake deadlines and strict rejection of unknown config keys.
+- Added bounded request/session/target controls and fail-closed memory accounting.
+
+[0.1.0]: https://github.com/jacek4yang/rust-xhttp/releases/tag/v0.1.0

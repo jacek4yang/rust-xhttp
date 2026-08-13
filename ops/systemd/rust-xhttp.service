@@ -3,7 +3,7 @@
 # Install: see ops/deploy.sh, or copy to /etc/systemd/system/ and
 #   systemctl daemon-reload && systemctl enable --now rust-xhttp
 Description=rust-xhttp XHTTP/VLESS server
-Documentation=https://local/rust-xhttp
+Documentation=https://github.com/jacek4yang/rust-xhttp
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60

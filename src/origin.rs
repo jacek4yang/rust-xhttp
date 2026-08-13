@@ -18,14 +18,11 @@ use http_body_util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use hyper::body::{Body as _, Frame, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::convert::Infallible;
-use std::fs::File;
-use std::io::BufReader;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsAcceptor;
 
 type Body = BoxBody<Bytes, Infallible>;
 
@@ -34,7 +31,10 @@ pub struct Origin {
     xhttp: Arc<XhttpConfig>,
     sessions: Arc<SessionTable>,
     metrics: Arc<Metrics>,
-    tls: Option<TlsAcceptor>,
+    tls: Option<crate::tls::Server>,
+    tcp_nodelay: bool,
+    tcp_keepalive: Option<Duration>,
+    handshake_timeout: Duration,
 }
 
 impl Origin {
@@ -43,14 +43,24 @@ impl Origin {
         sessions: Arc<SessionTable>,
         metrics: Arc<Metrics>,
         tls: Option<&TlsConfig>,
+        tcp_nodelay: bool,
+        tcp_keepalive: Option<Duration>,
     ) -> Result<Self, OriginError> {
-        let tls = tls.map(load_tls).transpose()?.map(TlsAcceptor::from);
+        let tls = tls.map(crate::tls::Server::from_config).transpose()?;
         Ok(Self {
             xhttp: Arc::new(xhttp),
             sessions,
             metrics,
             tls,
+            tcp_nodelay,
+            tcp_keepalive,
+            handshake_timeout: Duration::from_secs(10),
         })
+    }
+
+    pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = timeout;
+        self
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), OriginError> {
@@ -66,12 +76,14 @@ impl Origin {
     }
 
     async fn serve_connection(&self, stream: TcpStream) -> Result<(), OriginError> {
-        if let Some(tls) = &self.tls {
-            let stream = tls.accept(stream).await?;
-            self.serve_io(TokioIo::new(stream)).await
-        } else {
-            self.serve_io(TokioIo::new(stream)).await
-        }
+        crate::net::tune_stream(&stream, self.tcp_nodelay, self.tcp_keepalive);
+        let stream = match &self.tls {
+            Some(tls) => tokio::time::timeout(self.handshake_timeout, tls.accept(stream))
+                .await
+                .map_err(|_| OriginError::TlsHandshakeTimeout)??,
+            None => crate::tls::AcceptedStream::Plain(stream),
+        };
+        self.serve_io(TokioIo::new(stream)).await
     }
 
     async fn serve_io<I>(&self, io: TokioIo<I>) -> Result<(), OriginError>
@@ -194,6 +206,12 @@ impl Origin {
             Some(PushResult::TooManyPending | PushResult::TooManyPendingBytes) => {
                 self.sessions.remove(session_id);
                 empty(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+            Some(PushResult::GlobalBufferExceeded) => {
+                self.metrics
+                    .memory_limit_rejections
+                    .fetch_add(1, Ordering::Relaxed);
+                empty(StatusCode::SERVICE_UNAVAILABLE)
             }
             Some(PushResult::Closed) => empty(StatusCode::CONFLICT),
             None => {
@@ -448,34 +466,16 @@ fn request_header_bytes<B>(request: &Request<B>) -> usize {
     total
 }
 
-fn load_tls(config: &TlsConfig) -> Result<Arc<rustls::ServerConfig>, OriginError> {
-    let mut cert_reader = BufReader::new(File::open(&config.cert)?);
-    let certs: Vec<CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut cert_reader).collect::<Result<_, _>>()?;
-    let mut key_reader = BufReader::new(File::open(&config.key)?);
-    let key: PrivateKeyDer<'static> =
-        rustls_pemfile::private_key(&mut key_reader)?.ok_or(OriginError::MissingPrivateKey)?;
-    let mut tls = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    tls.alpn_protocols = config
-        .alpn
-        .iter()
-        .map(|value| value.as_bytes().to_vec())
-        .collect();
-    Ok(Arc::new(tls))
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum OriginError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("tls: {0}")]
-    Tls(#[from] rustls::Error),
+    Tls(#[from] crate::tls::Error),
+    #[error("TLS handshake timed out")]
+    TlsHandshakeTimeout,
     #[error("http connection: {0}")]
     Hyper(String),
-    #[error("TLS private key is missing")]
-    MissingPrivateKey,
 }
 
 #[cfg(test)]
@@ -510,7 +510,7 @@ mod tests {
         let metrics = Metrics::new();
         let handler: Handler = Arc::new(|_| {});
         let sessions = SessionTable::new(SessionConfig::default(), handler, metrics.clone());
-        Origin::new(xhttp, sessions, metrics, None).unwrap()
+        Origin::new(xhttp, sessions, metrics, None, true, None).unwrap()
     }
 
     async fn start_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {

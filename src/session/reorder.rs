@@ -32,20 +32,44 @@ pub enum PushResult {
     Duplicate,
     TooManyPending,
     TooManyPendingBytes,
+    GlobalBufferExceeded,
     Closed,
+}
+
+struct BudgetedBytes {
+    bytes: Bytes,
+    _reservation: Option<crate::buffer::Reservation>,
+}
+
+impl BudgetedBytes {
+    fn new(bytes: Bytes, reservation: Option<crate::buffer::Reservation>) -> Self {
+        Self {
+            bytes,
+            _reservation: reservation,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
 }
 
 struct State {
     next_seq: u64,
     sequence_exhausted: bool,
-    pending: BTreeMap<u64, Bytes>,
-    tx: mpsc::Sender<Bytes>,
+    pending: BTreeMap<u64, BudgetedBytes>,
+    tx: mpsc::Sender<BudgetedBytes>,
 }
 
 struct Shared {
     state: AsyncMutex<State>,
     max_packets: usize,
     max_bytes: usize,
+    budget: Option<crate::buffer::MemoryBudget>,
     pending_bytes: AtomicUsize,
     pending_count: AtomicUsize,
 }
@@ -56,8 +80,8 @@ pub struct UplinkSink {
 }
 
 pub struct UplinkReader {
-    rx: mpsc::Receiver<Bytes>,
-    cur: Bytes,
+    rx: mpsc::Receiver<BudgetedBytes>,
+    cur: Option<BudgetedBytes>,
 }
 
 /// `max_packets` and `max_bytes` bound the out-of-order buffer.
@@ -66,6 +90,15 @@ pub fn channel(
     max_packets: usize,
     max_bytes: usize,
     channel_depth: usize,
+) -> (UplinkSink, UplinkReader) {
+    channel_with_budget(max_packets, max_bytes, channel_depth, None)
+}
+
+pub fn channel_with_budget(
+    max_packets: usize,
+    max_bytes: usize,
+    channel_depth: usize,
+    budget: Option<crate::buffer::MemoryBudget>,
 ) -> (UplinkSink, UplinkReader) {
     let (tx, rx) = mpsc::channel(channel_depth.max(1));
     let shared = Arc::new(Shared {
@@ -77,16 +110,11 @@ pub fn channel(
         }),
         max_packets: max_packets.max(1),
         max_bytes,
+        budget,
         pending_bytes: AtomicUsize::new(0),
         pending_count: AtomicUsize::new(0),
     });
-    (
-        UplinkSink { shared },
-        UplinkReader {
-            rx,
-            cur: Bytes::new(),
-        },
-    )
+    (UplinkSink { shared }, UplinkReader { rx, cur: None })
 }
 
 impl UplinkSink {
@@ -112,6 +140,9 @@ impl UplinkSink {
             if self.shared.max_bytes != 0 && next_bytes > self.shared.max_bytes {
                 return PushResult::TooManyPendingBytes;
             }
+            let Ok(payload) = self.reserve_payload(payload) else {
+                return PushResult::GlobalBufferExceeded;
+            };
             self.shared
                 .pending_bytes
                 .store(next_bytes, Ordering::Relaxed);
@@ -121,6 +152,9 @@ impl UplinkSink {
         }
 
         // seq == next_seq: deliver this and any contiguous followers, in order.
+        let Ok(payload) = self.reserve_payload(payload) else {
+            return PushResult::GlobalBufferExceeded;
+        };
         if let Err(_e) = send_in_order(&mut st, payload).await {
             return PushResult::Closed;
         }
@@ -159,7 +193,7 @@ impl UplinkSink {
         // the Arc<Shared> drop. Instead, close by taking the lock in a blocking-friendly way:
         if let Ok(mut st) = self.shared.state.try_lock() {
             // Replace tx with a fresh closed channel (receiver dropped immediately).
-            let (dead_tx, _dead_rx) = mpsc::channel::<Bytes>(1);
+            let (dead_tx, _dead_rx) = mpsc::channel::<BudgetedBytes>(1);
             st.tx = dead_tx; // old tx dropped → reader sees EOF
             st.pending.clear();
         }
@@ -174,9 +208,17 @@ impl UplinkSink {
     pub fn pending_bytes(&self) -> usize {
         self.shared.pending_bytes.load(Ordering::Relaxed)
     }
+
+    fn reserve_payload(&self, payload: Bytes) -> Result<BudgetedBytes, ()> {
+        let reservation = match &self.shared.budget {
+            Some(budget) => Some(budget.try_reserve(payload.len() as u64).ok_or(())?),
+            None => None,
+        };
+        Ok(BudgetedBytes::new(payload, reservation))
+    }
 }
 
-async fn send_in_order(st: &mut State, payload: Bytes) -> Result<(), ()> {
+async fn send_in_order(st: &mut State, payload: BudgetedBytes) -> Result<(), ()> {
     if payload.is_empty() {
         return Ok(());
     }
@@ -189,16 +231,22 @@ impl AsyncRead for UplinkReader {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        if self.cur.is_empty() {
+        if self.cur.as_ref().is_none_or(BudgetedBytes::is_empty) {
             match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(b)) => self.cur = b,
+                Poll::Ready(Some(b)) => self.cur = Some(b),
                 Poll::Ready(None) => return Poll::Ready(Ok(())), // EOF
                 Poll::Pending => return Poll::Pending,
             }
         }
-        let n = self.cur.len().min(buf.remaining());
-        buf.put_slice(&self.cur[..n]);
-        let _ = self.cur.split_to(n);
+        let Some(cur) = self.cur.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        let n = cur.len().min(buf.remaining());
+        buf.put_slice(&cur.bytes[..n]);
+        let _ = cur.bytes.split_to(n);
+        if cur.is_empty() {
+            self.cur = None;
+        }
         Poll::Ready(Ok(()))
     }
 }
@@ -315,5 +363,29 @@ mod tests {
         );
         assert_eq!(sink.pending_bytes(), 3);
         assert_eq!(sink.pending_packets(), 1);
+    }
+
+    #[tokio::test]
+    async fn global_budget_is_released_after_read() {
+        let budget = crate::buffer::MemoryBudget::new(3);
+        let (sink, mut reader) = channel_with_budget(30, usize::MAX, 64, Some(budget.clone()));
+        assert_eq!(
+            sink.push(0, Bytes::from_static(b"abc")).await,
+            PushResult::Accepted
+        );
+        assert_eq!(budget.used(), 3);
+        assert_eq!(
+            sink.push(1, Bytes::from_static(b"x")).await,
+            PushResult::GlobalBufferExceeded
+        );
+
+        let mut out = [0u8; 3];
+        reader.read_exact(&mut out).await.unwrap();
+        assert_eq!(&out, b"abc");
+        assert_eq!(budget.used(), 0);
+        assert_eq!(
+            sink.push(1, Bytes::from_static(b"x")).await,
+            PushResult::Accepted
+        );
     }
 }

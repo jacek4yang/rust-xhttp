@@ -22,8 +22,11 @@ pub struct Dispatcher {
     validator: Validator,
     metrics: Arc<Metrics>,
     targets: Arc<Semaphore>,
+    handshake_timeout: Duration,
     connect_timeout: Duration,
     udp_idle: Duration,
+    tcp_nodelay: bool,
+    tcp_keepalive: Option<Duration>,
     encryption: Option<Arc<crate::vless::encryption::Server>>,
 }
 
@@ -39,10 +42,24 @@ impl Dispatcher {
             validator,
             metrics,
             targets: Arc::new(Semaphore::new(max_targets.max(1))),
+            handshake_timeout: Duration::from_secs(10),
             connect_timeout,
             udp_idle,
+            tcp_nodelay: true,
+            tcp_keepalive: None,
             encryption: None,
         }
+    }
+
+    pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = timeout;
+        self
+    }
+
+    pub fn with_tcp_tuning(mut self, tcp_nodelay: bool, tcp_keepalive: Option<Duration>) -> Self {
+        self.tcp_nodelay = tcp_nodelay;
+        self.tcp_keepalive = tcp_keepalive;
+        self
     }
 
     pub fn with_encryption(
@@ -70,8 +87,9 @@ impl Dispatcher {
             id_hash: _,
         } = conn;
         let (mut reader, writer) = if let Some(server) = &self.encryption {
-            let handshake = server
-                .handshake(&mut reader, |bytes| {
+            let handshake = match tokio::time::timeout(
+                self.handshake_timeout,
+                server.handshake(&mut reader, |bytes| {
                     let writer = writer.clone();
                     async move {
                         writer
@@ -79,8 +97,24 @@ impl Dispatcher {
                             .await
                             .map_err(|_| crate::vless::encryption::HandshakeError::Send)
                     }
-                })
-                .await?;
+                }),
+            )
+            .await
+            {
+                Ok(Ok(handshake)) => handshake,
+                Ok(Err(error)) => {
+                    self.metrics
+                        .encryption_handshake_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    self.metrics
+                        .encryption_handshake_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Err(DispatchError::HandshakeTimeout);
+                }
+            };
             (
                 ClientReader::Encrypted(Box::new(crate::vless::encryption::EncryptedReader::new(
                     reader,
@@ -92,14 +126,24 @@ impl Dispatcher {
         } else {
             (ClientReader::Plain(reader), ProtocolWriter::Plain(writer))
         };
-        let (user, header, addons) = match decode_request_header(&mut reader, &self.validator).await
+        let (user, header, addons) = match tokio::time::timeout(
+            self.handshake_timeout,
+            decode_request_header(&mut reader, &self.validator),
+        )
+        .await
         {
-            Ok(parsed) => parsed,
-            Err(error) => {
+            Ok(Ok(parsed)) => parsed,
+            Ok(Err(error)) => {
                 self.metrics
                     .vless_auth_failures
                     .fetch_add(1, Ordering::Relaxed);
                 return Err(error.into());
+            }
+            Err(_) => {
+                self.metrics
+                    .vless_auth_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(DispatchError::HandshakeTimeout);
             }
         };
         if addons.flow != user.flow || (!addons.flow.is_empty() && addons.flow != XRV) {
@@ -164,6 +208,7 @@ impl Dispatcher {
                     return Err(DispatchError::ConnectTimeout);
                 }
             };
+        crate::net::tune_stream(&stream, self.tcp_nodelay, self.tcp_keepalive);
 
         Metrics::add_gauge(&self.metrics.active_target_conns, 1);
         let result: Result<(), DispatchError> = async {
@@ -558,6 +603,8 @@ pub enum DispatchError {
     MissingAddress,
     #[error("target connect timed out")]
     ConnectTimeout,
+    #[error("protocol handshake timed out")]
+    HandshakeTimeout,
     #[error("UDP association idle timeout")]
     UdpIdle,
     #[error("XUDP association is closed")]
@@ -578,6 +625,41 @@ mod tests {
     use crate::session::{downlink_channel, uplink_channel};
     use crate::vless::User;
     use bytes::Bytes;
+
+    #[tokio::test]
+    async fn incomplete_vless_header_times_out() {
+        let id = [6u8; 16];
+        let validator = Validator::new([User {
+            id,
+            email: "timeout".into(),
+            flow: String::new(),
+        }]);
+        let metrics = Metrics::new();
+        let dispatcher = Dispatcher::new(
+            validator,
+            metrics.clone(),
+            1,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .with_handshake_timeout(Duration::from_millis(10));
+        let (_uplink, reader) = uplink_channel(30, 1 << 20, 32);
+        let (writer, mut downlink) = downlink_channel(32);
+
+        dispatcher.spawn(SessionConn {
+            reader,
+            writer,
+            id_hash: 0,
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), downlink.recv())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(metrics.vless_auth_failures.load(Ordering::Relaxed), 1);
+    }
 
     #[tokio::test]
     async fn vless_tcp_echo() {

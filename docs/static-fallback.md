@@ -44,7 +44,7 @@ strict Xray-compatible path for real clients.
 ## TLS boundary
 
 For public Cloudflare deployments, the externally visible TLS fingerprint is
-Cloudflare's edge, not this Rust origin. For direct TLS deployments, rustls
-does not produce the same handshake profile as nginx linked against OpenSSL.
-If exact nginx/OpenSSL public TLS behavior is required, terminate public TLS at
-nginx or Cloudflare and run `rust-xhttp` as the origin behind that layer.
+Cloudflare's edge, not this Rust origin. Direct TLS deployments use the in-tree
+TLS 1.3 backend. It is designed around an nginx/OpenSSL profile, but exact
+nginx/OpenSSL equivalence still requires the ignored differential harness to be
+run against the target build.

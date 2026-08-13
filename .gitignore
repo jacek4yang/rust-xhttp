@@ -28,6 +28,8 @@
 /cobertura.xml
 *.profraw
 *.profdata
+__pycache__/
+*.py[cod]
 perf.data
 perf.data.old
 flamegraph.svg

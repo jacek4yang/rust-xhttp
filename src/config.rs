@@ -21,6 +21,7 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub listen: ListenConfig,
     #[serde(default)]
@@ -34,12 +35,50 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListenConfig {
     /// e.g. "0.0.0.0:443" (direct/CF) or "127.0.0.1:8080" (behind nginx, plaintext h2c).
     pub addr: SocketAddr,
+    /// Tokio worker threads. 0 = available parallelism.
+    #[serde(default)]
+    pub workers: usize,
+    /// Enable TCP_NODELAY on accepted client sockets and outbound target TCP sockets.
+    #[serde(default = "default_true")]
+    pub tcp_nodelay: bool,
+    /// Enable SO_REUSEPORT on the listening socket (Linux multi-worker friendly).
+    #[serde(default = "default_true")]
+    pub reuse_port: bool,
+    /// listen(2) backlog. Clamped to at least 1 at bind time.
+    #[serde(default = "default_backlog")]
+    pub backlog: i32,
+    /// Kernel TCP keepalive idle seconds for long-lived streams. 0 = disabled.
+    #[serde(default = "default_tcp_keepalive_secs")]
+    pub tcp_keepalive_secs: u64,
+}
+
+fn default_backlog() -> i32 {
+    4096
+}
+
+fn default_tcp_keepalive_secs() -> u64 {
+    300
+}
+
+impl ListenConfig {
+    pub fn worker_threads(&self) -> usize {
+        if self.workers != 0 {
+            return self.workers;
+        }
+        std::thread::available_parallelism().map_or(1, usize::from)
+    }
+
+    pub fn tcp_keepalive(&self) -> Option<Duration> {
+        (self.tcp_keepalive_secs != 0).then(|| Duration::from_secs(self.tcp_keepalive_secs))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     pub cert: PathBuf,
     pub key: PathBuf,
@@ -53,6 +92,7 @@ fn default_alpn() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct XhttpConfig {
     /// Base path the XHTTP transport is mounted on. Normalized to start and end with '/'.
     pub path: String,
@@ -123,6 +163,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VlessConfig {
     pub users: Vec<UserConfig>,
     /// VLESS Encryption "decryption" config string (mlkem768x25519plus...). Empty = disabled.
@@ -131,6 +172,7 @@ pub struct VlessConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserConfig {
     pub id: Uuid,
     #[serde(default)]
@@ -141,6 +183,7 @@ pub struct UserConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     #[serde(default = "d_max_sessions")]
     pub max_sessions: usize,
@@ -148,14 +191,10 @@ pub struct Limits {
     pub max_pending_packets_per_session: usize,
     #[serde(default = "d_max_pending_bytes")]
     pub max_pending_bytes_per_session: usize,
-    #[serde(default = "d_max_sessions_per_user")]
-    pub max_sessions_per_user: usize,
     #[serde(default = "d_global_buffer_bytes")]
     pub global_buffer_bytes: u64,
     #[serde(default = "d_max_target_conns")]
     pub max_concurrent_target_conns: usize,
-    #[serde(default = "d_idle_secs")]
-    pub session_idle_secs: u64,
     #[serde(default = "d_handshake_secs")]
     pub handshake_timeout_secs: u64,
     #[serde(default = "d_connect_secs")]
@@ -173,17 +212,11 @@ fn d_max_pending_packets() -> usize {
 fn d_max_pending_bytes() -> usize {
     16 * 1024 * 1024
 }
-fn d_max_sessions_per_user() -> usize {
-    4096
-}
 fn d_global_buffer_bytes() -> u64 {
     1024 * 1024 * 1024
 }
 fn d_max_target_conns() -> usize {
     100_000
-}
-fn d_idle_secs() -> u64 {
-    300
 }
 fn d_handshake_secs() -> u64 {
     10
@@ -201,10 +234,8 @@ impl Default for Limits {
             max_sessions: d_max_sessions(),
             max_pending_packets_per_session: d_max_pending_packets(),
             max_pending_bytes_per_session: d_max_pending_bytes(),
-            max_sessions_per_user: d_max_sessions_per_user(),
             global_buffer_bytes: d_global_buffer_bytes(),
             max_concurrent_target_conns: d_max_target_conns(),
-            session_idle_secs: d_idle_secs(),
             handshake_timeout_secs: d_handshake_secs(),
             target_connect_secs: d_connect_secs(),
             udp_association_idle_secs: d_udp_idle_secs(),
@@ -213,9 +244,6 @@ impl Default for Limits {
 }
 
 impl Limits {
-    pub fn session_idle(&self) -> Duration {
-        Duration::from_secs(self.session_idle_secs)
-    }
     pub fn handshake_timeout(&self) -> Duration {
         Duration::from_secs(self.handshake_timeout_secs)
     }
@@ -231,10 +259,8 @@ impl Limits {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Observability {
-    /// Optional metrics listen address (plaintext). Disabled if absent.
-    #[serde(default)]
-    pub metrics_addr: Option<SocketAddr>,
     /// tracing filter, e.g. "info,rust_xhttp=debug".
     #[serde(default = "d_log")]
     pub log: String,
@@ -246,10 +272,7 @@ fn d_log() -> String {
 
 impl Default for Observability {
     fn default() -> Self {
-        Self {
-            metrics_addr: None,
-            log: d_log(),
-        }
+        Self { log: d_log() }
     }
 }
 
@@ -300,6 +323,19 @@ impl Config {
                 "xhttp.uplink_data_key is required unless uplink_data_placement is \"body\"".into(),
             ));
         }
+        if self.listen.workers == 0 {
+            self.listen.workers = self.listen.worker_threads();
+        }
+        if self.listen.backlog < 1 {
+            return Err(ConfigError::Invalid(
+                "listen.backlog must be greater than 0".into(),
+            ));
+        }
+        if self.limits.handshake_timeout_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "limits.handshake_timeout_secs must be greater than 0".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -329,8 +365,13 @@ mod tests {
         assert_eq!(cfg.xhttp.max_each_post_bytes, 1_000_000);
         assert_eq!(cfg.xhttp.max_buffered_posts, 30);
         assert_eq!(cfg.xhttp.uplink_data_placement, UplinkDataPlacement::Body);
-        assert_eq!(cfg.limits.session_idle_secs, 300);
+        assert_eq!(cfg.limits.handshake_timeout_secs, 10);
         assert_eq!(cfg.vless.users.len(), 1);
+        assert!(cfg.listen.workers >= 1);
+        assert!(cfg.listen.tcp_nodelay);
+        assert!(cfg.listen.reuse_port);
+        assert_eq!(cfg.listen.backlog, 4096);
+        assert_eq!(cfg.listen.tcp_keepalive_secs, 300);
     }
 
     #[test]
@@ -369,6 +410,22 @@ mod tests {
             "path = \"yourpath\"",
             "path = \"yourpath\"\nuplink_data_placement = \"cookie\"",
         );
+        assert!(Config::from_toml_str(&s).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let s = SAMPLE.replace(
+            "addr = \"0.0.0.0:443\"",
+            "addr = \"0.0.0.0:443\"\ntyop = true",
+        );
+        let error = Config::from_toml_str(&s).unwrap_err().to_string();
+        assert!(error.contains("unknown field `tyop`"), "{error}");
+    }
+
+    #[test]
+    fn rejects_zero_handshake_timeout() {
+        let s = format!("{SAMPLE}\n[limits]\nhandshake_timeout_secs = 0\n");
         assert!(Config::from_toml_str(&s).is_err());
     }
 }

@@ -33,6 +33,7 @@ fn run() -> Result<(), i32> {
     })?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(cfg.listen.worker_threads())
         .enable_all()
         .build()
         .map_err(|e| {
@@ -41,10 +42,10 @@ fn run() -> Result<(), i32> {
         })?;
 
     let cfg = Arc::new(cfg);
-    rt.block_on(async move {
-        if let Err(e) = runtime::serve(cfg).await {
+    rt.block_on(async move { runtime::serve(cfg).await })
+        .map_err(|e| {
             eprintln!("rust-xhttp: server error: {e}");
-        }
-    });
+            1
+        })?;
     Ok(())
 }

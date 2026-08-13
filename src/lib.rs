@@ -17,7 +17,8 @@
 //! - [`config`] — TOML schema, validation, safe defaults.
 //! - [`buffer`] — global byte-budget accounting for backpressure.
 //! - [`metrics`] — lock-free process counters.
-//! - [`origin`] — hyper + rustls HTTP/1.1+H2 origin (the XHTTP front door).
+//! - [`origin`] — hyper HTTP/1.1+H2 origin (the XHTTP front door).
+//! - [`tls`] — in-tree TLS 1.3 termination backend with nginx-profile shaping.
 //! - [`xhttp`] — XHTTP request parsing/classification + padding rules.
 //! - [`session`] — sharded session table + bounded uplink reorder + downlink.
 //! - [`dispatcher`] — VLESS dispatch to TCP/UDP/XUDP targets.
@@ -29,10 +30,12 @@ pub mod config;
 pub mod dispatcher;
 pub mod logging;
 pub mod metrics;
+pub mod net;
 pub mod origin;
 pub mod runtime;
 pub mod session;
 mod site;
+pub mod tls;
 pub mod vless;
 pub mod xhttp;
 pub mod xudp;
