@@ -14,6 +14,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cloudflare/nginx plaintext-origin deployment mode and nginx-shaped static fallback.
 - Bounded session reorder queues, global upload-buffer accounting, socket tuning,
   operational scripts, protocol documentation, and compatibility benchmarks.
+- English and Simplified Chinese operator documentation, a complete configuration
+  tutorial, committed benchmark evidence, and reproducible comparison charts.
+- Strict Xray-shaped JSON configuration, generated or preloaded `dist` website
+  fallback, ACME HTTP-01 issuance/renewal with atomic TLS activation, config
+  preflight checks, and graceful connection draining.
 
 ### Security
 

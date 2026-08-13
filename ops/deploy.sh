@@ -7,7 +7,7 @@
 #   ops/deploy.sh <ssh-host> [<ssh-host> ...]
 #
 # Requirements on the REMOTE host (set up once, out of band):
-#   - /root/xhttp/config.toml
+#   - /root/xhttp/config.json
 # The script copies the freshly built binary and the systemd unit, (re)loads the
 # unit, and enables + restarts the service. It does NOT touch your config or keys.
 set -euo pipefail

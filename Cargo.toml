@@ -2,7 +2,7 @@
 name = "rust-xhttp"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Pure-Rust XHTTP/VLESS server wire-compatible with the official Xray-core client (XHTTP packet-up + VLESS + VLESS-Encryption + Vision + XUDP)"
 license = "MPL-2.0"
 repository = "https://github.com/jacek4yang/rust-xhttp"
@@ -29,12 +29,15 @@ tokio = { version = "1.40", features = ["rt-multi-thread", "net", "io-util", "ti
 bytes = "1.7"
 futures = "0.3"
 socket2 = { version = "0.6", features = ["all"] }
+libc = "0.2"
 
 # http
 hyper = { version = "1.4", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2"] }
 http = "1.1"
 http-body-util = "0.1"
+httpdate = "1.0"
+arc-swap = "1.7"
 
 # crypto
 blake3 = "1.5"
@@ -56,8 +59,10 @@ zeroize = { version = "1.8", features = ["derive"] }
 
 # config / serde
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+serde_json = "1.0"
 uuid = { version = "1.10", features = ["serde"] }
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring"] }
+x509-parser = { version = "0.18", default-features = false }
 
 # observability / errors
 tracing = "0.1"

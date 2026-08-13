@@ -1,6 +1,6 @@
 //! HTTP/1.1, HTTP/2 and TLS origin for XHTTP packet-up.
 
-use crate::config::{TlsConfig, UplinkDataPlacement, XhttpConfig};
+use crate::config::{FallbackConfig, TlsConfig, UplinkDataPlacement, XhttpConfig};
 use crate::metrics::Metrics;
 use crate::session::{OpenDownload, PushResult, SessionTable};
 use crate::site;
@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 
 type Body = BoxBody<Bytes, Infallible>;
 
@@ -31,10 +32,12 @@ pub struct Origin {
     xhttp: Arc<XhttpConfig>,
     sessions: Arc<SessionTable>,
     metrics: Arc<Metrics>,
+    site: Arc<site::StaticSite>,
     tls: Option<crate::tls::Server>,
     tcp_nodelay: bool,
     tcp_keepalive: Option<Duration>,
     handshake_timeout: Duration,
+    graceful_shutdown: Duration,
 }
 
 impl Origin {
@@ -43,18 +46,22 @@ impl Origin {
         sessions: Arc<SessionTable>,
         metrics: Arc<Metrics>,
         tls: Option<&TlsConfig>,
+        fallback: &FallbackConfig,
         tcp_nodelay: bool,
         tcp_keepalive: Option<Duration>,
     ) -> Result<Self, OriginError> {
         let tls = tls.map(crate::tls::Server::from_config).transpose()?;
+        let site = Arc::new(site::StaticSite::from_config(fallback)?);
         Ok(Self {
             xhttp: Arc::new(xhttp),
             sessions,
             metrics,
+            site,
             tls,
             tcp_nodelay,
             tcp_keepalive,
             handshake_timeout: Duration::from_secs(10),
+            graceful_shutdown: Duration::from_secs(30),
         })
     }
 
@@ -63,16 +70,64 @@ impl Origin {
         self
     }
 
+    pub fn with_graceful_shutdown(mut self, timeout: Duration) -> Self {
+        self.graceful_shutdown = timeout;
+        self
+    }
+
+    pub fn tls_server(&self) -> Option<crate::tls::Server> {
+        self.tls.clone()
+    }
+
     pub async fn serve(self, listener: TcpListener) -> Result<(), OriginError> {
+        let mut shutdown = Box::pin(shutdown_signal());
+        let mut connections = JoinSet::new();
         loop {
-            let (stream, _) = listener.accept().await?;
-            let this = self.clone();
-            tokio::spawn(async move {
-                if let Err(error) = this.serve_connection(stream).await {
-                    tracing::debug!(%error, "origin connection ended");
+            tokio::select! {
+                _ = &mut shutdown => {
+                    tracing::info!(active_connections = connections.len(), "shutdown requested; draining connections");
+                    break;
                 }
-            });
+                Some(result) = connections.join_next(), if !connections.is_empty() => {
+                    if let Err(error) = result {
+                        tracing::debug!(%error, "origin connection task ended unexpectedly");
+                    }
+                }
+                accepted = listener.accept() => {
+                    let (stream, _) = match accepted {
+                        Ok(value) => value,
+                        Err(error) if is_transient_accept_error(&error) => {
+                            tracing::warn!(%error, "transient accept failure; applying backoff");
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            continue;
+                        }
+                        Err(error) => return Err(OriginError::Io(error)),
+                    };
+                    let this = self.clone();
+                    connections.spawn(async move {
+                        if let Err(error) = this.serve_connection(stream).await {
+                            tracing::debug!(%error, "origin connection ended");
+                        }
+                    });
+                }
+            }
         }
+
+        drop(listener);
+        let drained = tokio::time::timeout(self.graceful_shutdown, async {
+            while connections.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            let remaining = connections.len();
+            tracing::warn!(
+                remaining,
+                "graceful shutdown deadline reached; aborting connections"
+            );
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
+        }
+        Ok(())
     }
 
     async fn serve_connection(&self, stream: TcpStream) -> Result<(), OriginError> {
@@ -125,7 +180,7 @@ impl Origin {
         if !path_matches(&self.xhttp.path, request.uri())
             || !host_matches(&self.xhttp.host, request.headers(), request.uri())
         {
-            return self.site_response(request.method(), request.uri().path());
+            return self.site_response(&request);
         }
         if request.method() == Method::OPTIONS {
             let mut response = empty(StatusCode::OK);
@@ -134,7 +189,7 @@ impl Origin {
         }
         let padding = extract_padding(request.headers(), request.uri());
         if !is_padding_valid(&padding, self.xhttp.padding_from, self.xhttp.padding_to) {
-            return self.site_response(request.method(), request.uri().path());
+            return self.site_response(&request);
         }
         let meta = extract_meta_from_path(&self.xhttp.path, request.uri());
         let mut response = match classify(request.method(), &meta) {
@@ -336,37 +391,42 @@ impl Origin {
         response
     }
 
-    fn site_response(&self, method: &Method, path: &str) -> Response<Body> {
-        let reply = site::resolve(method, path);
-        let is_head = method == Method::HEAD;
-        let body = if is_head {
+    fn site_response(&self, request: &Request<Incoming>) -> Response<Body> {
+        let reply = self.site.resolve(request.method(), request.uri().path());
+        let not_modified = request
+            .headers()
+            .get(http::header::IF_NONE_MATCH)
+            .is_some_and(|value| value == reply.etag);
+        let is_head = request.method() == Method::HEAD;
+        let body = if is_head || not_modified {
             Empty::<Bytes>::new().boxed()
         } else {
-            Full::new(Bytes::from_static(reply.body)).boxed()
+            Full::new(reply.body.clone()).boxed()
         };
-        let mut response = response(reply.status, body);
+        let status = if not_modified {
+            StatusCode::NOT_MODIFIED
+        } else {
+            reply.status
+        };
+        let mut response = response(status, body);
         let headers = response.headers_mut();
-        headers.insert(
-            http::header::CONTENT_TYPE,
-            reply.content_type.parse().unwrap(),
-        );
-        headers.insert(
-            http::header::CONTENT_LENGTH,
-            reply.body.len().to_string().parse().unwrap(),
-        );
-        headers.insert(
-            http::header::CACHE_CONTROL,
-            reply.cache_control.parse().unwrap(),
-        );
-        headers.insert(http::header::ETAG, reply.etag.parse().unwrap());
-        headers.insert(
-            http::header::LAST_MODIFIED,
-            site::last_modified().parse().unwrap(),
-        );
-        headers.insert(http::header::ACCEPT_RANGES, "bytes".parse().unwrap());
+        headers.insert(http::header::CONTENT_TYPE, reply.content_type);
+        if !not_modified {
+            headers.insert(
+                http::header::CONTENT_LENGTH,
+                reply.body.len().to_string().parse().unwrap(),
+            );
+        }
+        headers.insert(http::header::CACHE_CONTROL, reply.cache_control);
+        headers.insert(http::header::ETAG, reply.etag);
+        headers.insert(http::header::LAST_MODIFIED, reply.last_modified);
         headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+        headers.insert(
+            "referrer-policy",
+            "strict-origin-when-cross-origin".parse().unwrap(),
+        );
         if let Some(allow) = reply.allow {
-            headers.insert(http::header::ALLOW, allow.parse().unwrap());
+            headers.insert(http::header::ALLOW, allow);
         }
         response
     }
@@ -377,6 +437,41 @@ impl Origin {
             .headers_mut()
             .insert("x-padding", padding.parse().unwrap());
     }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut terminate) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+fn is_transient_accept_error(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        error.raw_os_error().is_some_and(|code| {
+            matches!(
+                code,
+                libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM
+            )
+        })
+    }
+    #[cfg(not(unix))]
+    false
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,6 +569,8 @@ pub enum OriginError {
     Tls(#[from] crate::tls::Error),
     #[error("TLS handshake timed out")]
     TlsHandshakeTimeout,
+    #[error("fallback site: {0}")]
+    Site(#[from] crate::site::SiteError),
     #[error("http connection: {0}")]
     Hyper(String),
 }
@@ -510,7 +607,16 @@ mod tests {
         let metrics = Metrics::new();
         let handler: Handler = Arc::new(|_| {});
         let sessions = SessionTable::new(SessionConfig::default(), handler, metrics.clone());
-        Origin::new(xhttp, sessions, metrics, None, true, None).unwrap()
+        Origin::new(
+            xhttp,
+            sessions,
+            metrics,
+            None,
+            &FallbackConfig::default(),
+            true,
+            None,
+        )
+        .unwrap()
     }
 
     async fn start_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -548,7 +654,7 @@ mod tests {
         );
         assert!(response.contains("server: nginx"));
         assert!(response.contains("content-type: text/html; charset=utf-8"));
-        assert!(response.contains("Edge Notes"));
+        assert!(response.contains("Independent journal"));
         assert!(!response.contains("x-padding:"));
     }
 
@@ -569,6 +675,34 @@ mod tests {
         assert!(response.contains("Page not found"));
         assert!(!response.starts_with("HTTP/1.1 400"));
         assert!(!response.contains("x-padding:"));
+    }
+
+    #[tokio::test]
+    async fn static_fallback_honors_etag_without_body() {
+        let (addr, task) = start_origin().await;
+        let first = raw_request(
+            addr,
+            "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let etag = first
+            .lines()
+            .find_map(|line| line.strip_prefix("etag: "))
+            .expect("fallback response has an ETag");
+        let second = raw_request(
+            addr,
+            &format!(
+                "GET / HTTP/1.1\r\nHost: example.com\r\nIf-None-Match: {etag}\r\nConnection: close\r\n\r\n"
+            ),
+        )
+        .await;
+        task.abort();
+
+        assert!(
+            second.starts_with("HTTP/1.1 304 Not Modified"),
+            "response was:\n{second}"
+        );
+        assert!(second.ends_with("\r\n\r\n"), "304 included a body");
     }
 
     #[tokio::test]

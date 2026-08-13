@@ -47,18 +47,18 @@ impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
                         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
                 );
             }
-            if let Some(length) = self.expected {
-                if self.encrypted.len() >= 5 + length {
-                    let record = self.encrypted.split_to(5 + length).freeze();
-                    let header: &[u8; 5] = record[..5].try_into().unwrap();
-                    self.plaintext = Bytes::from(
-                        self.cipher
-                            .open(header, &record[5..])
-                            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-                    );
-                    self.expected = None;
-                    continue;
-                }
+            if let Some(length) = self.expected
+                && self.encrypted.len() >= 5 + length
+            {
+                let record = self.encrypted.split_to(5 + length).freeze();
+                let header: &[u8; 5] = record[..5].try_into().unwrap();
+                self.plaintext = Bytes::from(
+                    self.cipher
+                        .open(header, &record[5..])
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+                );
+                self.expected = None;
+                continue;
             }
 
             let mut temporary = [0u8; 8192];

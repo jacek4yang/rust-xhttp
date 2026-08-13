@@ -5,7 +5,7 @@ mirror the management documentation layout of `rust-reality` and to reserve the
 topic for a future XHTTP/VLESS routing layer.
 
 Current routing behavior is direct VLESS dispatch to the requested target, with
-limits and timeout controls in `config.example.toml`.
+limits and timeout controls in `config.example.json`.
 
 If geo routing is added, it should follow the same local asset convention:
 

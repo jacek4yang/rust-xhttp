@@ -15,6 +15,9 @@ step() { printf '\n\033[1;34m=== %s ===\033[0m\n' "$1"; }
 step "fmt"
 cargo fmt --check
 
+step "docs"
+python3 scripts/check_docs.py
+
 step "clippy"
 cargo clippy --all-targets -- -D warnings
 

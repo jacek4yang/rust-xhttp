@@ -134,49 +134,45 @@ def vless_tcp_request(target_port: int, payload: bytes) -> bytes:
 
 def write_rust_config(path: str, port: int, max_post: int) -> None:
     with open(path, "w", encoding="utf-8") as config:
-        config.write(
-            f"""
-[listen]
-addr = "127.0.0.1:{port}"
-workers = 0
-tcp_nodelay = true
-reuse_port = true
-backlog = 4096
-tcp_keepalive_secs = 300
-
-[xhttp]
-path = "/xhttp/"
-host = ""
-padding_from = 100
-padding_to = 1000
-max_each_post_bytes = {max_post}
-max_buffered_posts = 30
-session_grace_secs = 30
-sse_header = true
-
-[vless]
-decryption = "none"
-
-[[vless.users]]
-id = "{USER}"
-email = "docker-perf"
-flow = ""
-
-[limits]
-max_sessions = 65536
-max_pending_packets_per_session = 30
-max_pending_bytes_per_session = 16777216
-max_sessions_per_user = 4096
-global_buffer_bytes = 1073741824
-max_concurrent_target_conns = 100000
-session_idle_secs = 300
-handshake_timeout_secs = 10
-target_connect_secs = 10
-udp_association_idle_secs = 60
-
-[observability]
-log = "warn"
-"""
+        json.dump(
+            {
+                "log": {"loglevel": "warn"},
+                "inbounds": [
+                    {
+                        "listen": "127.0.0.1",
+                        "port": port,
+                        "protocol": "vless",
+                        "settings": {
+                            "clients": [
+                                {
+                                    "id": str(USER),
+                                    "email": "docker-perf",
+                                    "flow": "",
+                                }
+                            ],
+                            "decryption": "none",
+                        },
+                        "streamSettings": {
+                            "network": "xhttp",
+                            "security": "none",
+                            "xhttpSettings": {
+                                "path": "/xhttp/",
+                                "xPaddingBytes": "100-1000",
+                                "scMaxEachPostBytes": max_post,
+                                "scMaxBufferedPosts": 30,
+                            },
+                        },
+                    }
+                ],
+                "server": {
+                    "workers": 0,
+                    "tcpNodelay": True,
+                    "reusePort": True,
+                    "backlog": 4096,
+                    "tcpKeepaliveSeconds": 300,
+                },
+            },
+            config,
         )
 
 
@@ -244,7 +240,7 @@ def terminate(process: subprocess.Popen[str]) -> dict[str, str]:
 
 def start_rust(tmp: str, rust_bin: str, max_post: int) -> Candidate:
     port = free_port()
-    config_path = os.path.join(tmp, "rust.toml")
+    config_path = os.path.join(tmp, "rust.json")
     write_rust_config(config_path, port, max_post)
     env = os.environ.copy()
     env.setdefault("RUST_LOG", "warn")

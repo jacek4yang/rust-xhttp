@@ -1,0 +1,79 @@
+{
+  "comparison": {
+    "ops_per_second_ratio_rust_over_xray": 1.216182895390351,
+    "p99_latency_ratio_rust_over_xray": 0.7371696237533107,
+    "server_cpu_ms_per_op_ratio_rust_over_xray": 0.5312499999999999
+  },
+  "environment": {
+    "container": true,
+    "network": "host",
+    "python": "3.13.13"
+  },
+  "results": [
+    {
+      "client_cpu_ms_per_op": 0.83,
+      "client_cpu_seconds": 0.83,
+      "concurrency": 32,
+      "echo_payload_mib_per_second": 24.58603961920422,
+      "latency_ms": {
+        "max": 30.901049998647068,
+        "mean": 9.896447071143484,
+        "p50": 8.696233999216929,
+        "p90": 12.458408004022203,
+        "p99": 27.19478600192815
+      },
+      "name": "rust-xhttp-server",
+      "operations": 1000,
+      "ops_per_second": 3147.0130712581404,
+      "payload_bytes": 4096,
+      "rss_kib": {
+        "client_after": 82712,
+        "client_before": 49824,
+        "server_after": 29964,
+        "server_before": 12028
+      },
+      "server_cpu_ms_per_op": 0.33999999999999997,
+      "server_cpu_seconds": 0.33999999999999997,
+      "server_port": 49175,
+      "socks_port": 55785,
+      "wall_seconds": 0.3177616289976868
+    },
+    {
+      "client_cpu_ms_per_op": 0.9,
+      "client_cpu_seconds": 0.9,
+      "concurrency": 32,
+      "echo_payload_mib_per_second": 20.215741984525266,
+      "latency_ms": {
+        "max": 41.95391399844084,
+        "mean": 12.168236960016657,
+        "p50": 9.458444998017512,
+        "p90": 26.49196799757192,
+        "p99": 36.89081199991051
+      },
+      "name": "xray-core-server",
+      "operations": 1000,
+      "ops_per_second": 2587.614974019234,
+      "payload_bytes": 4096,
+      "rss_kib": {
+        "client_after": 148028,
+        "client_before": 54572,
+        "server_after": 158564,
+        "server_before": 52936
+      },
+      "server_cpu_ms_per_op": 0.64,
+      "server_cpu_seconds": 0.64,
+      "server_port": 52813,
+      "socks_port": 46059,
+      "wall_seconds": 0.38645625799836125
+    }
+  ],
+  "workload": {
+    "concurrency": 32,
+    "echo_payload_accounting": "payload bytes counted once uplink and once downlink",
+    "operations_per_candidate": 1000,
+    "payload_bytes": 4096,
+    "protocol": "official Xray client SOCKS -> VLESS/XHTTP packet-up -> server -> TCP HTTP echo",
+    "vless_encryption": true,
+    "warmup_operations_per_candidate": 100
+  }
+}

@@ -219,14 +219,14 @@ impl SessionTable {
         let grace = self.cfg.grace;
         tokio::spawn(async move {
             tokio::time::sleep(grace).await;
-            if let Some(s) = weak.upgrade() {
-                if !s.fully_connected.load(Ordering::Acquire) {
-                    table
-                        .metrics
-                        .session_timeouts
-                        .fetch_add(1, Ordering::Relaxed);
-                    table.remove(&id);
-                }
+            if let Some(s) = weak.upgrade()
+                && !s.fully_connected.load(Ordering::Acquire)
+            {
+                table
+                    .metrics
+                    .session_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                table.remove(&id);
             }
         });
 

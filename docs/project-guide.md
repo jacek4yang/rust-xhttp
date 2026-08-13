@@ -27,7 +27,7 @@ Machine-local assets live under `local/`; reference source trees live under
 | Path | Responsibility |
 | --- | --- |
 | `src/main.rs`, `src/runtime.rs` | CLI entry and runtime wiring |
-| `src/config.rs` | TOML schema and validation |
+| `src/config.rs` | Xray-shaped JSON schema and validation |
 | `src/origin.rs` | hyper HTTP origin over plaintext or in-tree TLS |
 | `src/xhttp/` | XHTTP request classification and padding validation |
 | `src/session/` | session table, reorder, downlink |

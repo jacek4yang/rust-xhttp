@@ -15,6 +15,8 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
+    # Mozilla's curated public WebPKI root-certificate data.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

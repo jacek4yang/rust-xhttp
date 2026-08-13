@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="570" viewBox="0 0 1040 570" role="img" aria-labelledby="title desc">
+<title id="title">End-to-end p99 latency</title>
+<desc id="desc">rust-xhttp and Xray-core comparison; lower is better.</desc>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<style>text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#172033}.title{font-size:25px;font-weight:700}.sub{font-size:14px;fill:#526078}.axis{font-size:13px;fill:#526078}.value{font-size:13px;font-weight:650}.label{font-size:14px;font-weight:600}.grid{stroke:#dbe3ef;stroke-width:1}.base{stroke:#7b879c;stroke-width:1.5}</style>
+<text class="title" x="90" y="38">End-to-end p99 latency</text>
+<text class="sub" x="90" y="64">v0.1.0 evidence snapshot · lower is better · controlled same-host loopback</text>
+<line class="grid" x1="90" y1="465.0" x2="1005" y2="465.0"/>
+<text class="axis" x="78" y="469.0" text-anchor="end">0.00</text>
+<line class="grid" x1="90" y1="391.0" x2="1005" y2="391.0"/>
+<text class="axis" x="78" y="395.0" text-anchor="end">14.97</text>
+<line class="grid" x1="90" y1="317.0" x2="1005" y2="317.0"/>
+<text class="axis" x="78" y="321.0" text-anchor="end">29.95</text>
+<line class="grid" x1="90" y1="243.0" x2="1005" y2="243.0"/>
+<text class="axis" x="78" y="247.0" text-anchor="end">44.92</text>
+<line class="grid" x1="90" y1="169.0" x2="1005" y2="169.0"/>
+<text class="axis" x="78" y="173.0" text-anchor="end">59.89</text>
+<line class="grid" x1="90" y1="95.0" x2="1005" y2="95.0"/>
+<text class="axis" x="78" y="99.0" text-anchor="end">74.87</text>
+<line class="base" x1="90" y1="465" x2="1005" y2="465"/>
+<text class="axis" transform="translate(22 280.0) rotate(-90)" text-anchor="middle">milliseconds</text>
+<rect x="165.5" y="151.4" width="68" height="313.6" rx="5" fill="#f97316"/>
+<text class="value" x="199.5" y="143.4" text-anchor="middle">63.45</text>
+<rect x="251.5" y="166.1" width="68" height="298.9" rx="5" fill="#2563eb"/>
+<text class="value" x="285.5" y="158.1" text-anchor="middle">60.47</text>
+<text class="label" x="242.5" y="495" text-anchor="middle">Raw server</text>
+<text class="axis" x="242.5" y="516" text-anchor="middle">c64</text>
+<rect x="470.5" y="362.4" width="68" height="102.6" rx="5" fill="#f97316"/>
+<text class="value" x="504.5" y="354.4" text-anchor="middle">20.75</text>
+<rect x="556.5" y="234.8" width="68" height="230.2" rx="5" fill="#2563eb"/>
+<text class="value" x="590.5" y="226.8" text-anchor="middle">46.57</text>
+<text class="label" x="547.5" y="495" text-anchor="middle">Official client</text>
+<text class="axis" x="547.5" y="516" text-anchor="middle">c32</text>
+<rect x="775.5" y="330.6" width="68" height="134.4" rx="5" fill="#f97316"/>
+<text class="value" x="809.5" y="322.6" text-anchor="middle">27.19</text>
+<rect x="861.5" y="282.7" width="68" height="182.3" rx="5" fill="#2563eb"/>
+<text class="value" x="895.5" y="274.7" text-anchor="middle">36.89</text>
+<text class="label" x="852.5" y="495" text-anchor="middle">Client + encryption</text>
+<text class="axis" x="852.5" y="516" text-anchor="middle">c32</text>
+<rect x="395.0" y="533" width="18" height="18" rx="3" fill="#f97316"/>
+<text class="axis" x="422.0" y="547">rust-xhttp</text>
+<rect x="555.0" y="533" width="18" height="18" rx="3" fill="#2563eb"/>
+<text class="axis" x="582.0" y="547">Xray-core</text>
+</svg>

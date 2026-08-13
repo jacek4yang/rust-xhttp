@@ -39,6 +39,14 @@ impl Server {
             Self::NginxProfile(backend) => backend.accept(stream).await,
         }
     }
+
+    /// Atomically replace the identity used by new handshakes. Existing
+    /// connections continue with their negotiated traffic keys.
+    pub fn reload(&self, config: &TlsConfig) -> Result<(), Error> {
+        match self {
+            Self::NginxProfile(backend) => backend.reload(config),
+        }
+    }
 }
 
 impl AsyncRead for AcceptedStream {
@@ -95,6 +103,10 @@ pub enum Error {
     MissingPrivateKey,
     #[error("invalid PEM file")]
     Pem,
+    #[error("invalid leaf X.509 certificate")]
+    InvalidCertificate,
+    #[error("TLS certificate and private key do not match")]
+    CertificateKeyMismatch,
 }
 
 #[cfg(test)]

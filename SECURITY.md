@@ -1,5 +1,7 @@
 # Security Policy
 
+English | [简体中文](SECURITY.zh-CN.md)
+
 ## Supported versions
 
 Only the latest `0.1.x` release receives security fixes. Users should upgrade to

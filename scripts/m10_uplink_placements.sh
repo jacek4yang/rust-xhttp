@@ -11,6 +11,7 @@ cargo build --quiet --bin rust-xhttp
 ROOT="$ROOT" python3 - <<'PY'
 import base64
 import http.client
+import json
 import os
 import socket
 import subprocess
@@ -76,36 +77,42 @@ def b64(data):
 
 def start_origin(placement, listen_port):
     tmp = tempfile.TemporaryDirectory()
-    config_path = os.path.join(tmp.name, "config.toml")
+    config_path = os.path.join(tmp.name, "config.json")
     with open(config_path, "w", encoding="utf-8") as f:
-        f.write(f"""
-[listen]
-addr = "127.0.0.1:{listen_port}"
-
-[xhttp]
-path = "/xhttp/"
-host = ""
-padding_from = 100
-padding_to = 1000
-max_each_post_bytes = 1000000
-max_buffered_posts = 30
-max_header_bytes = 65536
-session_grace_secs = 30
-sse_header = true
-uplink_data_placement = "{placement}"
-uplink_data_key = "{DATA_KEY}"
-
-[vless]
-decryption = "none"
-
-[[vless.users]]
-id = "{USER}"
-email = "m10-local"
-flow = ""
-
-[observability]
-log = "warn"
-""")
+        json.dump(
+            {
+                "log": {"loglevel": "warn"},
+                "inbounds": [
+                    {
+                        "listen": "127.0.0.1",
+                        "port": listen_port,
+                        "protocol": "vless",
+                        "settings": {
+                            "clients": [
+                                {
+                                    "id": str(USER),
+                                    "email": "m10-local",
+                                    "flow": "",
+                                }
+                            ],
+                            "decryption": "none",
+                        },
+                        "streamSettings": {
+                            "network": "xhttp",
+                            "security": "none",
+                            "xhttpSettings": {
+                                "path": "/xhttp/",
+                                "xPaddingBytes": "100-1000",
+                                "serverMaxHeaderBytes": 65536,
+                                "uplinkDataPlacement": placement,
+                                "uplinkDataKey": DATA_KEY,
+                            },
+                        },
+                    }
+                ],
+            },
+            f,
+        )
     server = subprocess.Popen(
         [os.path.join(ROOT, "target", "debug", "rust-xhttp"), config_path],
         stdout=subprocess.PIPE,

@@ -1,5 +1,10 @@
 # Benchmark Report
 
+The published bilingual comparison, charts, limitations, raw evidence links, and
+reproduction commands now live in [docs/benchmarks.md](benchmarks.md) and
+[docs/benchmarks.zh-CN.md](benchmarks.zh-CN.md). This file retains the contributor
+notes for the lower-level Criterion suite.
+
 Current benchmark management mirrors `rust-reality`: `benches/kernels.rs`,
 `benches/geo.rs`, and `scripts/bench.sh` are the canonical local entry points.
 
@@ -49,5 +54,5 @@ enabled on both the Xray client and the server candidate.
 The runtime now binds the listener through the Linux socket tuning layer
 (`SO_REUSEADDR`, optional `SO_REUSEPORT`, configured backlog) and applies
 `TCP_NODELAY` plus optional kernel keepalive to accepted client sockets and TCP
-targets. Throughput/latency benchmarks should record these `[listen]` values
+targets. Throughput/latency benchmarks should record the `server` socket values
 alongside CPU model, kernel, `ulimit -n`, and CDN/proxy placement.

@@ -437,6 +437,10 @@ mod tests {
         fn algorithm(&self) -> SignatureAlgorithm {
             SignatureAlgorithm::Ecdsa
         }
+
+        fn public_key(&self) -> &[u8] {
+            &[]
+        }
     }
 
     #[derive(Debug)]

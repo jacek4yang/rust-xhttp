@@ -7,7 +7,7 @@ REALITY fallback splice.
 - `flood.py <host> <port> <N> [hold_secs]` opens `N` HTTP stream-down requests
   against `XHTTP_PATH` (default `/xhttp/`) with valid padding and holds the
   sockets open.
-- `pressure.sh <server-binary> <config.toml> <N> [nofile]` starts the server,
+- `pressure.sh <server-binary> <config.json> <N> [nofile]` starts the server,
   runs the flood, reports FD/socket/RSS/thread counts, and checks that `/healthz`
   still responds.
 

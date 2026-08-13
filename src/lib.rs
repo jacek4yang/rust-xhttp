@@ -14,7 +14,7 @@
 //!
 //! Module layout (one logical protocol layer per module):
 //!
-//! - [`config`] — TOML schema, validation, safe defaults.
+//! - [`config`] — strict Xray-shaped JSON schema, validation, safe defaults.
 //! - [`buffer`] — global byte-budget accounting for backpressure.
 //! - [`metrics`] — lock-free process counters.
 //! - [`origin`] — hyper HTTP/1.1+H2 origin (the XHTTP front door).
@@ -25,6 +25,7 @@
 //! - [`vless`] — VLESS header/addons/address/auth, plus [`vless::vision`] and [`vless::encryption`].
 //! - [`xudp`] — XUDP Mux-frame and plain VLESS-UDP codecs.
 
+pub mod acme;
 pub mod buffer;
 pub mod config;
 pub mod dispatcher;

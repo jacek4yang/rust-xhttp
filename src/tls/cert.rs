@@ -7,7 +7,8 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use ring::rand::SystemRandom;
-use ring::signature::{self, EcdsaKeyPair, Ed25519KeyPair, RsaKeyPair};
+use ring::signature::{self, EcdsaKeyPair, Ed25519KeyPair, KeyPair, RsaKeyPair};
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::config::TlsConfig;
 
@@ -46,6 +47,11 @@ impl CertifiedIdentity {
         let cert_chain = load_cert_chain(config)?;
         let private_key = load_private_key(config)?;
         let signing_key = RingSigningKey::from_private_key(&private_key)?;
+        let (_, leaf) = X509Certificate::from_der(cert_chain[0].as_ref())
+            .map_err(|_| super::Error::InvalidCertificate)?;
+        if leaf.public_key().subject_public_key.data.as_ref() != signing_key.public_key() {
+            return Err(super::Error::CertificateKeyMismatch);
+        }
         Self::new(cert_chain, signing_key)
     }
 
@@ -94,6 +100,7 @@ impl CertifiedIdentity {
 pub trait SigningKey: fmt::Debug + Send + Sync {
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>>;
     fn algorithm(&self) -> SignatureAlgorithm;
+    fn public_key(&self) -> &[u8];
 }
 
 pub trait Signer: fmt::Debug + Send + Sync {
@@ -228,6 +235,14 @@ impl SigningKey for RingSigningKey {
             Self::Rsa(_) => SignatureAlgorithm::Rsa,
             Self::EcdsaP256(_) | Self::EcdsaP384(_) => SignatureAlgorithm::Ecdsa,
             Self::Ed25519(_) => SignatureAlgorithm::Ed25519,
+        }
+    }
+
+    fn public_key(&self) -> &[u8] {
+        match self {
+            Self::Rsa(key) => key.public_key().as_ref(),
+            Self::EcdsaP256(key) | Self::EcdsaP384(key) => key.public_key().as_ref(),
+            Self::Ed25519(key) => key.public_key().as_ref(),
         }
     }
 }
@@ -527,6 +542,10 @@ mod tests {
 
         fn algorithm(&self) -> SignatureAlgorithm {
             SignatureAlgorithm::Ecdsa
+        }
+
+        fn public_key(&self) -> &[u8] {
+            &[]
         }
     }
 

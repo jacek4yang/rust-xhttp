@@ -222,49 +222,45 @@ def http_post_via_socks(proxy_port: int, target_port: int, payload: bytes, timeo
 
 def write_rust_config(path: str, port: int, max_post: int, decryption: str) -> None:
     with open(path, "w", encoding="utf-8") as config:
-        config.write(
-            f"""
-[listen]
-addr = "127.0.0.1:{port}"
-workers = 0
-tcp_nodelay = true
-reuse_port = true
-backlog = 4096
-tcp_keepalive_secs = 300
-
-[xhttp]
-path = "/xhttp/"
-host = ""
-padding_from = 100
-padding_to = 1000
-max_each_post_bytes = {max_post}
-max_buffered_posts = 30
-session_grace_secs = 30
-sse_header = true
-
-[vless]
-decryption = "{decryption}"
-
-[[vless.users]]
-id = "{USER}"
-email = "docker-xray-client"
-flow = ""
-
-[limits]
-max_sessions = 65536
-max_pending_packets_per_session = 30
-max_pending_bytes_per_session = 16777216
-max_sessions_per_user = 4096
-global_buffer_bytes = 1073741824
-max_concurrent_target_conns = 100000
-session_idle_secs = 300
-handshake_timeout_secs = 10
-target_connect_secs = 10
-udp_association_idle_secs = 60
-
-[observability]
-log = "warn"
-"""
+        json.dump(
+            {
+                "log": {"loglevel": "warn"},
+                "inbounds": [
+                    {
+                        "listen": "127.0.0.1",
+                        "port": port,
+                        "protocol": "vless",
+                        "settings": {
+                            "clients": [
+                                {
+                                    "id": str(USER),
+                                    "email": "docker-xray-client",
+                                    "flow": "",
+                                }
+                            ],
+                            "decryption": decryption,
+                        },
+                        "streamSettings": {
+                            "network": "xhttp",
+                            "security": "none",
+                            "xhttpSettings": {
+                                "path": "/xhttp/",
+                                "xPaddingBytes": "100-1000",
+                                "scMaxEachPostBytes": max_post,
+                                "scMaxBufferedPosts": 30,
+                            },
+                        },
+                    }
+                ],
+                "server": {
+                    "workers": 0,
+                    "tcpNodelay": True,
+                    "reusePort": True,
+                    "backlog": 4096,
+                    "tcpKeepaliveSeconds": 300,
+                },
+            },
+            config,
         )
 
 
@@ -398,7 +394,7 @@ def start_rust_server(
     tmp: str, max_post: int, _unused: int, decryption: str
 ) -> tuple[int, subprocess.Popen[str]]:
     port = free_port()
-    config_path = os.path.join(tmp, "rust-server.toml")
+    config_path = os.path.join(tmp, "rust-server.json")
     write_rust_config(config_path, port, max_post, decryption)
     process = start_process([os.environ["RUST_XHTTP_BIN"], config_path], "rust-xhttp-server")
     try:

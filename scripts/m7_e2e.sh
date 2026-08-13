@@ -10,6 +10,7 @@ cargo build --quiet --bin rust-xhttp
 
 ROOT="$ROOT" python3 - <<'PY'
 import http.client
+import json
 import os
 import socket
 import subprocess
@@ -72,34 +73,36 @@ def vless_tcp_request(target_port, payload):
 listen_port = free_port()
 echo_port = free_port()
 tmp = tempfile.TemporaryDirectory()
-config_path = os.path.join(tmp.name, "config.toml")
+config_path = os.path.join(tmp.name, "config.json")
 
 with open(config_path, "w", encoding="utf-8") as f:
-    f.write(f"""
-[listen]
-addr = "127.0.0.1:{listen_port}"
-
-[xhttp]
-path = "/xhttp/"
-host = ""
-padding_from = 100
-padding_to = 1000
-max_each_post_bytes = 1000000
-max_buffered_posts = 30
-session_grace_secs = 30
-sse_header = true
-
-[vless]
-decryption = "none"
-
-[[vless.users]]
-id = "{USER}"
-email = "m7-local"
-flow = ""
-
-[observability]
-log = "warn"
-""")
+    json.dump(
+        {
+            "log": {"loglevel": "warn"},
+            "inbounds": [
+                {
+                    "listen": "127.0.0.1",
+                    "port": listen_port,
+                    "protocol": "vless",
+                    "settings": {
+                        "clients": [
+                            {"id": str(USER), "email": "m7-local", "flow": ""}
+                        ],
+                        "decryption": "none",
+                    },
+                    "streamSettings": {
+                        "network": "xhttp",
+                        "security": "none",
+                        "xhttpSettings": {
+                            "path": "/xhttp/",
+                            "xPaddingBytes": "100-1000",
+                        },
+                    },
+                }
+            ],
+        },
+        f,
+    )
 
 ready = threading.Event()
 threading.Thread(target=echo_server, args=(echo_port, ready), daemon=True).start()

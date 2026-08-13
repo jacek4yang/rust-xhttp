@@ -1,38 +1,45 @@
 # Production Hardening
 
-Use the systemd unit at `ops/systemd/rust-xhttp.service` and deploy with:
+First complete the [configuration guide](configuration.md), then use the
+systemd unit at `ops/systemd/rust-xhttp.service`:
 
 ```bash
 ops/deploy.sh root@server
 ```
 
-The deploy script builds `target/release/rust-xhttp`, copies it to
-`/root/xhttp/rust-xhttp`, atomically swaps the binary, reloads systemd, and
-restarts the service. It does not modify remote config or secrets.
+The script atomically replaces the binary and restarts the service. It does not
+modify the remote JSON, website, certificate, or private keys.
 
 ## Remote layout
 
 ```text
 /root/xhttp/
-  config.toml
+  config.json
   rust-xhttp
   rust-xhttp.old
+/var/lib/rust-xhttp/
+  acme/                 # only when automatic certificates are enabled
 ```
 
 ## Runtime notes
 
-- Release builds use the repository's `x86-64-v3` target profile and require a
-  Haswell/Zen-class CPU or newer. For older x86-64 hosts, build with
-  `RUSTFLAGS="-C target-cpu=x86-64-v2 -C target-feature=+aes,+pclmulqdq"`.
-- Put certificates and keys outside the repository or under ignored `local/`
-  paths.
-- Keep `LimitNOFILE` high for concurrent HTTP streams and target sockets.
-- Tune `[listen]` for the host: `workers = 0` uses the available CPU count,
-  `reuse_port = true` and `backlog = 4096` are the intended Linux defaults, and
-  `tcp_keepalive_secs = 300` prevents dead peers from pinning long-lived streams.
-- Size `[limits].global_buffer_bytes` below the service memory limit. It gates
-  buffered XHTTP upload bytes across sessions and fails closed before the process
-  can be pushed into OOM.
-- The provided unit logs to journald and disables core dumps.
-- Bind privileged ports with `CAP_NET_BIND_SERVICE`, not a fully privileged
-  process.
+- Official Linux builds target `x86-64-v3`. Older hosts should build from
+  source with a compatible `RUSTFLAGS` target CPU.
+- The supplied service receives only `CAP_NET_BIND_SERVICE`, disables core
+  dumps, protects system paths, creates private state storage, and has a stop
+  deadline five seconds longer than the default application drain deadline.
+- `MemoryHigh=1536M` and `MemoryMax=2G` match the default 1 GiB protocol buffer
+  budget plus the 128 MiB site limit and runtime headroom. Recalculate them if
+  either JSON limit changes.
+- `LimitNOFILE=65536` must cover public sockets, target sockets, ACME, and
+  system overhead. Do not increase concurrency limits independently.
+- `workers: 0`, `reusePort: true`, `backlog: 4096`, and 300-second keepalive
+  are intended Linux defaults. Measure before changing worker count.
+- Put a user `dist` directory under a service-readable path and keep it
+  immutable at runtime. ACME cache is the only normal runtime write path.
+- Use `rust-xhttp check config.json` in deployment automation before restart.
+- Monitor SIGTERM drain, accept-pressure warnings, buffer/session rejections,
+  target timeouts, certificate expiry, and ACME renewal failures.
+
+See [Performance and Availability](performance-and-availability.md) for sizing
+and overload analysis.

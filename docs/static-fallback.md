@@ -1,50 +1,41 @@
-# Static Fallback Surface
+# Static Website Fallback
 
-`rust-xhttp` now serves a small built-in static site for non-XHTTP traffic.
-This is a deployability feature, not a claim of indistinguishability.
+`rust-xhttp` is a normal website for HTTP traffic that does not qualify for the
+configured XHTTP transport. This is a deployment and isolation feature, not a
+claim of indistinguishability.
 
 ## Request split
 
-- `/healthz` and `/readyz` remain operational health endpoints.
-- Requests that match the configured XHTTP path and Host and carry valid
-  XHTTP padding continue into the packet-up/stream-down protocol handler.
-- Browser-style `GET` and `HEAD` requests that do not qualify as XHTTP return
-  static blog content, assets, `robots.txt`, or a static 404 page.
-- Non-read methods on the static surface return `405 Method Not Allowed` with
-  `Allow: GET, HEAD`.
-- Valid XHTTP responses include default-mode `X-Padding` response padding.
-  Static fallback responses intentionally do not include this header.
+- `/healthz` and `/readyz` are reserved operational endpoints.
+- A request enters XHTTP only when path, Host, and request padding all match the
+  strict transport configuration.
+- Other browser-style GET/HEAD requests use either the generated blog or the
+  user-supplied `fallback.dist` site.
+- Other methods on the website surface return 405 with `Allow: GET, HEAD`.
+- Valid XHTTP responses carry configured `X-Padding`; website responses do not.
 
-This keeps malformed probes away from protocol internals while preserving the
-strict Xray-compatible path for real clients.
+VLESS authentication happens later, inside the first XHTTP session payload. A
+wrong UUID/encryption key uniformly closes the session; it cannot become an HTML
+response without corrupting XHTTP framing and exposing an authentication oracle.
 
-## Reference notes
+## Performance and containment
 
-- Xray-core validates Host and path before writing XHTTP response padding and
-  checking request padding in
-  `local/references/Xray-core/transport/internet/splithttp/hub.go`.
-- Xray-core extracts default `x_padding` from `Referer` query or the request
-  query in
-  `local/references/Xray-core/transport/internet/splithttp/xpadding.go`.
-- Xray-core applies non-obfs response padding as an `X-Padding` header before
-  XHTTP method handling in the same `hub.go`/`xpadding.go` path.
-- nginx's HTTP header filter emits static-site headers such as `Server`,
-  `Last-Modified`, `Accept-Ranges`, and `ETag` from
-  `local/references/nginx/src/http/ngx_http_header_filter_module.c`.
+The complete site is preloaded before the listener starts. Request handling
+clones immutable `Bytes` and never opens files. MIME type, ETag, Last-Modified,
+and directory index aliases are precomputed; `If-None-Match` is supported.
+`maxFileBytes` and `maxTotalBytes` bound memory. Symlinks are rejected, so the
+loader cannot follow a link outside `dist`. Updating files requires a restart.
+
+See the bilingual [configuration guide](configuration.md) for both modes and
+the [performance/availability note](performance-and-availability.md) for the
+resource model.
 
 ## Local evidence
 
-- `scripts/m7_e2e.sh` validates packet-up/stream-down over a local HTTP
-  origin and checks XHTTP response padding on upload and download responses.
-- `scripts/m9_tls_h2_smoke.sh` validates a local TLS origin with ALPN `h2`,
-  static fallback shape, and XHTTP OPTIONS response padding.
-- `scripts/m10_uplink_placements.sh` validates Xray-compatible packet-up
-  payload placement for `header`, `cookie`, and `auto`.
-
-## TLS boundary
-
-For public Cloudflare deployments, the externally visible TLS fingerprint is
-Cloudflare's edge, not this Rust origin. Direct TLS deployments use the in-tree
-TLS 1.3 backend. It is designed around an nginx/OpenSSL profile, but exact
-nginx/OpenSSL equivalence still requires the ignored differential harness to be
-run against the target build.
+- `scripts/m7_e2e.sh` validates packet-up/stream-down and response padding.
+- `scripts/m9_tls_h2_smoke.sh` validates TLS 1.3, ALPN H2, a customized blog,
+  and separation between website and XHTTP headers.
+- `scripts/m13_acme_pebble.sh` validates real HTTP-01 issuance against a local
+  Pebble CA, atomic cache publication, and activation on the TLS endpoint.
+- Unit tests validate directory aliases, MIME, byte limits, ETag responses, and
+  rejection of symlinks.

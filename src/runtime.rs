@@ -14,8 +14,26 @@ use crate::origin::Origin;
 use crate::session::{Handler, SessionConfig, SessionTable};
 use crate::vless::{self, User, Validator};
 
+/// Validate startup resources without binding sockets or contacting an ACME CA.
+pub fn validate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let _site = crate::site::StaticSite::from_config(&cfg.fallback)?;
+    if let Some(tls) = &cfg.tls
+        && tls.acme.is_none()
+    {
+        let _server = crate::tls::Server::from_config(tls)?;
+    }
+    if !matches!(cfg.vless.decryption.as_str(), "" | "none") {
+        let _encryption = vless::encryption::EncryptionConfig::parse(&cfg.vless.decryption)?;
+    }
+    Ok(())
+}
+
 /// Build the stack and serve until the listener errors or the process exits.
 pub async fn serve(cfg: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {
+    let acme = match cfg.tls.as_ref() {
+        Some(tls) => crate::acme::Manager::prepare(tls).await?,
+        None => None,
+    };
     let validator = Validator::new(cfg.vless.users.iter().map(|user| User {
         id: *user.id.as_bytes(),
         email: user.email.clone(),
@@ -65,10 +83,17 @@ pub async fn serve(cfg: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {
         sessions,
         metrics,
         cfg.tls.as_ref(),
+        &cfg.fallback,
         cfg.listen.tcp_nodelay,
         cfg.listen.tcp_keepalive(),
     )?
-    .with_handshake_timeout(cfg.limits.handshake_timeout());
+    .with_handshake_timeout(cfg.limits.handshake_timeout())
+    .with_graceful_shutdown(std::time::Duration::from_secs(
+        cfg.listen.graceful_shutdown_secs,
+    ));
+    if let (Some(manager), Some(server), Some(tls)) = (acme, origin.tls_server(), cfg.tls.clone()) {
+        manager.spawn_renewal(server, tls);
+    }
     let listener =
         crate::net::bind_listener(cfg.listen.addr, cfg.listen.reuse_port, cfg.listen.backlog)?;
     tracing::info!(

@@ -1,0 +1,79 @@
+{
+  "log": {
+    "loglevel": "info"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-xhttp-in",
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+            "email": "replace-me",
+            "flow": ""
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": ["h2", "http/1.1"],
+          "certificates": [
+            {
+              "certificateFile": "/etc/rust-xhttp/tls/fullchain.pem",
+              "keyFile": "/etc/rust-xhttp/tls/privkey.pem"
+            }
+          ]
+        },
+        "xhttpSettings": {
+          "path": "/xhttp/",
+          "host": "example.com",
+          "scMaxEachPostBytes": 1000000,
+          "scMaxBufferedPosts": 30,
+          "sessionGraceSeconds": 30,
+          "noSSEHeader": false,
+          "serverMaxHeaderBytes": 8192,
+          "xPaddingBytes": "100-1000",
+          "uplinkDataPlacement": "body",
+          "uplinkDataKey": ""
+        }
+      }
+    }
+  ],
+  "server": {
+    "workers": 0,
+    "tcpNodelay": true,
+    "reusePort": true,
+    "backlog": 4096,
+    "tcpKeepaliveSeconds": 300,
+    "gracefulShutdownSeconds": 30,
+    "limits": {
+      "maxSessions": 65536,
+      "maxPendingPacketsPerSession": 30,
+      "maxPendingBytesPerSession": 16777216,
+      "globalBufferBytes": 1073741824,
+      "maxConcurrentTargetConns": 100000,
+      "handshakeTimeoutSeconds": 10,
+      "targetConnectSeconds": 10,
+      "udpAssociationIdleSeconds": 60
+    }
+  },
+  "fallback": {
+    "mode": "builtin",
+    "index": "index.html",
+    "maxFileBytes": 8388608,
+    "maxTotalBytes": 134217728,
+    "site": {
+      "seed": "example.com",
+      "title": "",
+      "author": "",
+      "description": "",
+      "language": "en"
+    }
+  }
+}

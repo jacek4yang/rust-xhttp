@@ -17,10 +17,9 @@ pub fn extract_padding(headers: &HeaderMap, uri: &Uri) -> String {
     if let Some(referer) = headers
         .get(http::header::REFERER)
         .and_then(|v| v.to_str().ok())
+        && !referer.is_empty()
     {
-        if !referer.is_empty() {
-            return query_value(referer, "x_padding").unwrap_or_default();
-        }
+        return query_value(referer, "x_padding").unwrap_or_default();
     }
     // no Referer → look at the request URI query directly
     if let Some(q) = uri.query() {

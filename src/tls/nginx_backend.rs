@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
+use arc_swap::ArcSwap;
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
@@ -27,16 +28,24 @@ const MAX_APP_PLAINTEXT: usize = 16 * 1024;
 
 #[derive(Clone)]
 pub struct NginxProfileBackend {
-    identity: CertifiedIdentity,
+    identity: Arc<ArcSwap<CertifiedIdentity>>,
     alpn: Arc<[String]>,
 }
 
 impl NginxProfileBackend {
     pub fn new(config: &TlsConfig) -> Result<Self, super::Error> {
         Ok(Self {
-            identity: CertifiedIdentity::from_config(config)?,
+            identity: Arc::new(ArcSwap::from_pointee(CertifiedIdentity::from_config(
+                config,
+            )?)),
             alpn: Arc::from(config.alpn.clone()),
         })
+    }
+
+    pub fn reload(&self, config: &TlsConfig) -> Result<(), super::Error> {
+        self.identity
+            .store(Arc::new(CertifiedIdentity::from_config(config)?));
+        Ok(())
     }
 
     pub async fn accept(&self, stream: TcpStream) -> Result<super::AcceptedStream, super::Error> {
@@ -49,8 +58,9 @@ impl NginxProfileBackend {
         let parsed = ClientHello::parse_message(&client_hello)?;
         let cipher = choose_cipher(&parsed).ok_or(Error::NoSharedCipherSuite)?;
         let template = server_hello_template(cipher, GROUP_X25519);
+        let identity = self.identity.load();
         let mut prepared =
-            prepare_server_handshake(&client_hello, &template, &self.identity, &self.alpn)?;
+            prepare_server_handshake(&client_hello, &template, &identity, &self.alpn)?;
 
         stream
             .write_all(&plain_record(
@@ -164,32 +174,31 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncRead for TlsStream<T> {
                 self.expected_record_len = Some(len);
             }
 
-            if let Some(len) = self.expected_record_len {
-                if self.encrypted.len() >= 5 + len {
-                    let record = self.encrypted.split_to(5 + len).freeze();
-                    self.expected_record_len = None;
-                    let (content_type, plaintext) =
-                        self.read_keys.open(&record).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "TLS record authentication failed",
-                            )
-                        })?;
-                    match content_type {
-                        RECORD_APPLICATION_DATA => {
-                            if plaintext.is_empty() {
-                                continue;
-                            }
-                            self.plaintext = Bytes::from(plaintext);
+            if let Some(len) = self.expected_record_len
+                && self.encrypted.len() >= 5 + len
+            {
+                let record = self.encrypted.split_to(5 + len).freeze();
+                self.expected_record_len = None;
+                let (content_type, plaintext) = self.read_keys.open(&record).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "TLS record authentication failed",
+                    )
+                })?;
+                match content_type {
+                    RECORD_APPLICATION_DATA => {
+                        if plaintext.is_empty() {
                             continue;
                         }
-                        RECORD_ALERT => return Poll::Ready(Ok(())),
-                        other => {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("unexpected TLS inner content type {other}"),
-                            )));
-                        }
+                        self.plaintext = Bytes::from(plaintext);
+                        continue;
+                    }
+                    RECORD_ALERT => return Poll::Ready(Ok(())),
+                    other => {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unexpected TLS inner content type {other}"),
+                        )));
                     }
                 }
             }

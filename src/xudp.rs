@@ -90,10 +90,10 @@ pub fn encode_frame(frame: &Frame) -> Result<Bytes, XudpError> {
     if let Some(target) = &frame.target {
         metadata.push(NETWORK_UDP);
         crate::vless::address::write_port_then_address(&mut metadata, target.port, &target.address);
-        if frame.status == STATUS_NEW {
-            if let Some(global_id) = frame.global_id {
-                metadata.extend_from_slice(&global_id);
-            }
+        if frame.status == STATUS_NEW
+            && let Some(global_id) = frame.global_id
+        {
+            metadata.extend_from_slice(&global_id);
         }
     }
     if metadata.len() > MAX_METADATA_LEN {

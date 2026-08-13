@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -27,7 +27,9 @@ jobs:
           set -euo pipefail
           archive="rust-xhttp-${TAG}-x86_64-unknown-linux-gnu"
           mkdir "$archive"
-          cp target/release/rust-xhttp README.md LICENSE config.example.toml "$archive/"
+          cp target/release/rust-xhttp README.md README.zh-CN.md LICENSE \
+            config.example.json config.acme.example.json "$archive/"
+          cp -r docs "$archive/"
           tar -czf "$archive.tar.gz" "$archive"
           sha256sum "$archive.tar.gz" > "$archive.tar.gz.sha256"
       - name: Publish GitHub Release

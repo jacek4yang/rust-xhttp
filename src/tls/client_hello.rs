@@ -160,7 +160,7 @@ impl ClientHello {
         let session_id = reader.take(session_id_len)?.to_vec();
 
         let cipher_len = reader.u16()? as usize;
-        if cipher_len % 2 != 0 {
+        if !cipher_len.is_multiple_of(2) {
             return Err(ParseError::Malformed);
         }
         let cipher_bytes = reader.take(cipher_len)?;
@@ -259,7 +259,7 @@ fn parse_extensions(
 fn parse_signature_schemes(data: &[u8]) -> Result<Vec<u16>, ParseError> {
     let mut reader = Reader::new(data);
     let list_len = reader.u16()? as usize;
-    if list_len % 2 != 0 {
+    if !list_len.is_multiple_of(2) {
         return Err(ParseError::Malformed);
     }
     let list = reader.take(list_len)?;

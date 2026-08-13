@@ -4,7 +4,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ "$#" -lt 3 ]; then
-  echo "usage: pressure.sh <server-binary> <config.toml> <flood-N> [nofile]" >&2
+  echo "usage: pressure.sh <server-binary> <config.json> <flood-N> [nofile]" >&2
   exit 2
 fi
 
