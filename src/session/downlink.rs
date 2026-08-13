@@ -6,6 +6,7 @@
 //! the bytes are the raw protocol stream (the SSE *content-type* is only a middlebox hint).
 
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Writer side, held by the dispatcher / VLESS writer.
@@ -17,12 +18,19 @@ pub struct DownlinkSink {
 /// Reader side, taken once by the GET (download) handler.
 pub struct DownlinkReader {
     rx: mpsc::Receiver<Bytes>,
+    session_key: Option<(Arc<str>, u64)>,
 }
 
 /// `capacity` is the number of in-flight chunks before the writer blocks.
 pub fn channel(capacity: usize) -> (DownlinkSink, DownlinkReader) {
     let (tx, rx) = mpsc::channel(capacity.max(1));
-    (DownlinkSink { tx }, DownlinkReader { rx })
+    (
+        DownlinkSink { tx },
+        DownlinkReader {
+            rx,
+            session_key: None,
+        },
+    )
 }
 
 impl DownlinkSink {
@@ -41,6 +49,14 @@ impl DownlinkSink {
 }
 
 impl DownlinkReader {
+    pub(crate) fn set_session_key(&mut self, id: Arc<str>, id_hash: u64) {
+        self.session_key = Some((id, id_hash));
+    }
+
+    pub(crate) fn take_session_key(&mut self) -> Option<(Arc<str>, u64)> {
+        self.session_key.take()
+    }
+
     /// Next chunk to flush, or None when the writer side is dropped (target EOF/close).
     pub async fn recv(&mut self) -> Option<Bytes> {
         self.rx.recv().await

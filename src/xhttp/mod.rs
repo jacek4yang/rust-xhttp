@@ -12,7 +12,10 @@
 use http::{HeaderMap, Method, Uri};
 
 mod padding;
-pub use padding::{extract_padding, generate_response_padding, is_padding_valid};
+pub use padding::{
+    ResponsePadding, extract_padding, extract_padding_len, generate_response_padding,
+    is_padding_len_valid, is_padding_valid,
+};
 
 /// What the server should do with a request, after host/path/padding validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,12 +44,27 @@ pub struct Meta {
 /// Extract session id and seq from the path, given the normalized base `path` (ends with '/').
 /// Default = both in the path (`/<base>/<session>/<seq>`).
 pub fn extract_meta_from_path(base: &str, uri: &Uri) -> Meta {
+    let meta = extract_meta_from_path_borrowed(base, uri);
+    Meta {
+        session_id: meta.session_id.to_owned(),
+        seq_str: meta.seq_str.to_owned(),
+    }
+}
+
+/// Borrowed hot-path metadata. This avoids allocating session and sequence strings while
+/// retaining the original owned [`Meta`] API for library callers.
+pub struct BorrowedMeta<'a> {
+    pub session_id: &'a str,
+    pub seq_str: &'a str,
+}
+
+pub fn extract_meta_from_path_borrowed<'a>(base: &str, uri: &'a Uri) -> BorrowedMeta<'a> {
     let full = uri.path();
     let rest = full.strip_prefix(base).unwrap_or("");
     let mut segs = rest.split('/');
-    let session_id = segs.next().unwrap_or("").to_string();
-    let seq_str = segs.next().unwrap_or("").to_string();
-    Meta {
+    let session_id = segs.next().unwrap_or("");
+    let seq_str = segs.next().unwrap_or("");
+    BorrowedMeta {
         session_id,
         seq_str,
     }
@@ -79,8 +97,42 @@ pub fn host_matches(configured: &str, headers: &HeaderMap, uri: &Uri) -> bool {
 ///   * GET  → uplink iff seq present; otherwise download (with session) or stream-one (no session)
 ///   * other methods → uplink request
 pub fn classify(method: &Method, meta: &Meta) -> RequestKind {
+    match classify_borrowed(
+        method,
+        &BorrowedMeta {
+            session_id: &meta.session_id,
+            seq_str: &meta.seq_str,
+        },
+    ) {
+        BorrowedRequestKind::PacketUpload { session_id, seq } => RequestKind::PacketUpload {
+            session_id: session_id.to_owned(),
+            seq,
+        },
+        BorrowedRequestKind::StreamDownload { session_id } => RequestKind::StreamDownload {
+            session_id: session_id.to_owned(),
+        },
+        BorrowedRequestKind::StreamUp { session_id } => RequestKind::StreamUp {
+            session_id: session_id.to_owned(),
+        },
+        BorrowedRequestKind::StreamOne => RequestKind::StreamOne,
+        BorrowedRequestKind::Options => RequestKind::Options,
+        BorrowedRequestKind::Unsupported => RequestKind::Unsupported,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorrowedRequestKind<'a> {
+    PacketUpload { session_id: &'a str, seq: u64 },
+    StreamDownload { session_id: &'a str },
+    StreamUp { session_id: &'a str },
+    StreamOne,
+    Options,
+    Unsupported,
+}
+
+pub fn classify_borrowed<'a>(method: &Method, meta: &BorrowedMeta<'a>) -> BorrowedRequestKind<'a> {
     if method == Method::OPTIONS {
-        return RequestKind::Options;
+        return BorrowedRequestKind::Options;
     }
     let has_session = !meta.session_id.is_empty();
     let has_seq = !meta.seq_str.is_empty();
@@ -90,28 +142,28 @@ pub fn classify(method: &Method, meta: &Meta) -> RequestKind {
     if is_uplink && has_session {
         if has_seq {
             match meta.seq_str.parse::<u64>() {
-                Ok(seq) => RequestKind::PacketUpload {
-                    session_id: meta.session_id.clone(),
+                Ok(seq) => BorrowedRequestKind::PacketUpload {
+                    session_id: meta.session_id,
                     seq,
                 },
                 // Go returns 500 on ParseUint failure; surface as Unsupported→ caller maps to 500.
-                Err(_) => RequestKind::Unsupported,
+                Err(_) => BorrowedRequestKind::Unsupported,
             }
         } else {
-            RequestKind::StreamUp {
-                session_id: meta.session_id.clone(),
+            BorrowedRequestKind::StreamUp {
+                session_id: meta.session_id,
             }
         }
     } else if method == Method::GET || !has_session {
         if has_session {
-            RequestKind::StreamDownload {
-                session_id: meta.session_id.clone(),
+            BorrowedRequestKind::StreamDownload {
+                session_id: meta.session_id,
             }
         } else {
-            RequestKind::StreamOne
+            BorrowedRequestKind::StreamOne
         }
     } else {
-        RequestKind::Unsupported
+        BorrowedRequestKind::Unsupported
     }
 }
 
@@ -125,14 +177,16 @@ mod tests {
 
     #[test]
     fn meta_from_path_default() {
-        let m = extract_meta_from_path("/yourpath/", &uri("/yourpath/SESSION123/7"));
+        let target = uri("/yourpath/SESSION123/7");
+        let m = extract_meta_from_path("/yourpath/", &target);
         assert_eq!(m.session_id, "SESSION123");
         assert_eq!(m.seq_str, "7");
     }
 
     #[test]
     fn meta_download_no_seq() {
-        let m = extract_meta_from_path("/yourpath/", &uri("/yourpath/SESSION123"));
+        let target = uri("/yourpath/SESSION123");
+        let m = extract_meta_from_path("/yourpath/", &target);
         assert_eq!(m.session_id, "SESSION123");
         assert_eq!(m.seq_str, "");
     }

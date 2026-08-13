@@ -35,9 +35,12 @@ pub struct SessionConn {
 pub type Handler = Arc<dyn Fn(SessionConn) + Send + Sync>;
 
 struct Session {
+    id: Arc<str>,
+    id_hash: u64,
     uplink: UplinkSink,
     downlink_reader: Mutex<Option<DownlinkReader>>,
     fully_connected: AtomicBool,
+    grace_reaper: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 pub struct SessionConfig {
@@ -65,7 +68,7 @@ impl Default for SessionConfig {
 }
 
 struct Shard {
-    map: Mutex<HashMap<String, Arc<Session>>>,
+    map: Mutex<HashMap<Arc<str>, Arc<Session>>>,
 }
 
 pub struct SessionTable {
@@ -115,11 +118,6 @@ impl SessionTable {
         })
     }
 
-    fn shard_for(&self, id: &str) -> &Shard {
-        let idx = (fnv1a(id.as_bytes()) as usize) % self.shards.len();
-        &self.shards[idx]
-    }
-
     /// Push an uplink packet for `session_id`, creating the session if needed.
     /// Returns the push result; `None` if the global session cap is hit.
     pub async fn push_uplink(
@@ -128,7 +126,7 @@ impl SessionTable {
         seq: u64,
         payload: bytes::Bytes,
     ) -> Option<PushResult> {
-        let session = self.upsert(session_id)?;
+        let session = self.upsert(session_id, false)?;
         let r = session.uplink.push(seq, payload).await;
         // keep gauges roughly current (best-effort; exact accounting in reader)
         self.metrics
@@ -141,22 +139,50 @@ impl SessionTable {
     /// (cancels grace reaping). Returns None if there is no such session or the GET already
     /// took it.
     pub fn open_download(self: &Arc<Self>, session_id: &str) -> OpenDownload {
-        let Some(session) = self.upsert(session_id) else {
+        let Some(session) = self.upsert(session_id, true) else {
             return OpenDownload::Capacity;
         };
         session.fully_connected.store(true, Ordering::Release);
+        if let Some(reaper) = session.grace_reaper.lock().unwrap().take() {
+            reaper.abort();
+        }
         let reader = session.downlink_reader.lock().unwrap().take();
         match reader {
-            Some(reader) => OpenDownload::Opened(reader),
+            Some(mut reader) => {
+                reader.set_session_key(session.id.clone(), session.id_hash);
+                OpenDownload::Opened(reader)
+            }
             None => OpenDownload::Conflict,
         }
     }
 
     /// Remove a session (called when the download GET ends, or on tear-down).
     pub fn remove(self: &Arc<Self>, session_id: &str) {
-        let shard = self.shard_for(session_id);
-        let removed = shard.map.lock().unwrap().remove(session_id);
+        self.remove_inner(session_id, fnv1a(session_id.as_bytes()), None, true);
+    }
+
+    fn remove_inner(
+        &self,
+        session_id: &str,
+        id_hash: u64,
+        expected: Option<&Arc<Session>>,
+        cancel_reaper: bool,
+    ) {
+        let shard = &self.shards[(id_hash as usize) % self.shards.len()];
+        let removed = {
+            let mut map = shard.map.lock().unwrap();
+            if expected.is_some_and(|expected| {
+                map.get(session_id)
+                    .is_none_or(|current| !Arc::ptr_eq(current, expected))
+            }) {
+                return;
+            }
+            map.remove(session_id)
+        };
         if let Some(s) = removed {
+            if cancel_reaper && let Some(reaper) = s.grace_reaper.lock().unwrap().take() {
+                reaper.abort();
+            }
             s.uplink.close();
             self.active.fetch_sub(1, Ordering::AcqRel);
             crate::metrics::Metrics::add_gauge(&self.metrics.active_sessions, -1);
@@ -167,16 +193,19 @@ impl SessionTable {
         self.active.load(Ordering::Relaxed)
     }
 
-    fn upsert(self: &Arc<Self>, session_id: &str) -> Option<Arc<Session>> {
-        // fast path
-        {
-            let map = self.shard_for(session_id).map.lock().unwrap();
-            if let Some(s) = map.get(session_id) {
-                return Some(s.clone());
-            }
-        }
-        // slow path
-        let shard = self.shard_for(session_id);
+    pub(crate) fn remove_hashed(self: &Arc<Self>, session_id: &str, id_hash: u64) {
+        self.remove_inner(session_id, id_hash, None, true);
+    }
+
+    fn upsert(
+        self: &Arc<Self>,
+        session_id: &str,
+        fully_connected_on_create: bool,
+    ) -> Option<Arc<Session>> {
+        let id_hash = fnv1a(session_id.as_bytes());
+        let shard = &self.shards[(id_hash as usize) % self.shards.len()];
+        // A single lookup covers both existing and new sessions. Acquiring the same lock
+        // twice added pure overhead for every new session.
         let mut map = shard.map.lock().unwrap();
         if let Some(s) = map.get(session_id) {
             return Some(s.clone());
@@ -195,12 +224,16 @@ impl SessionTable {
             self.cfg.global_buffer_budget.clone(),
         );
         let (dl_sink, dl_reader) = downlink::channel(self.cfg.downlink_capacity);
+        let id: Arc<str> = Arc::from(session_id);
         let session = Arc::new(Session {
+            id: id.clone(),
+            id_hash,
             uplink: sink,
             downlink_reader: Mutex::new(Some(dl_reader)),
-            fully_connected: AtomicBool::new(false),
+            fully_connected: AtomicBool::new(fully_connected_on_create),
+            grace_reaper: Mutex::new(None),
         });
-        map.insert(session_id.to_string(), session.clone());
+        map.insert(id.clone(), session.clone());
         self.active.fetch_add(1, Ordering::AcqRel);
         crate::metrics::Metrics::add_gauge(&self.metrics.active_sessions, 1);
         drop(map);
@@ -209,15 +242,20 @@ impl SessionTable {
         (self.handler)(SessionConn {
             reader,
             writer: dl_sink,
-            id_hash: fnv1a(session_id.as_bytes()),
+            id_hash: session.id_hash,
         });
 
-        // grace reaper: if the GET never opens within `grace`, evict.
+        // A download-created session is already fully connected and never needs a grace
+        // timer. This is the normal Xray request order and avoids one task/timer per session.
+        if fully_connected_on_create {
+            return Some(session);
+        }
+
+        // Upload-created sessions need a grace reaper until their GET opens.
         let table = self.clone();
-        let id = session_id.to_string();
         let weak = Arc::downgrade(&session);
         let grace = self.cfg.grace;
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             tokio::time::sleep(grace).await;
             if let Some(s) = weak.upgrade()
                 && !s.fully_connected.load(Ordering::Acquire)
@@ -226,10 +264,76 @@ impl SessionTable {
                     .metrics
                     .session_timeouts
                     .fetch_add(1, Ordering::Relaxed);
-                table.remove(&id);
+                table.remove_inner(&id, s.id_hash, Some(&s), false);
             }
         });
+        let reaper = task.abort_handle();
+        *session.grace_reaper.lock().unwrap() = Some(reaper.clone());
+        if session.fully_connected.load(Ordering::Acquire)
+            || shard
+                .map
+                .lock()
+                .unwrap()
+                .get(session_id)
+                .is_none_or(|current| !Arc::ptr_eq(current, &session))
+        {
+            reaper.abort();
+            session.grace_reaper.lock().unwrap().take();
+        }
 
         Some(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table(grace: Duration) -> (Arc<SessionTable>, Arc<crate::metrics::Metrics>) {
+        let metrics = crate::metrics::Metrics::new();
+        let handler: Handler = Arc::new(|_| {});
+        let table = SessionTable::new(
+            SessionConfig {
+                grace,
+                ..SessionConfig::default()
+            },
+            handler,
+            metrics.clone(),
+        );
+        (table, metrics)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn grace_reaper_expires_unconnected_session() {
+        let (table, metrics) = table(Duration::from_secs(30));
+        table
+            .push_uplink("expires", 0, bytes::Bytes::from_static(b"x"))
+            .await;
+        assert_eq!(table.active_sessions(), 1);
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(table.active_sessions(), 0);
+        assert_eq!(metrics.session_timeouts.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn opening_download_cancels_grace_reaper() {
+        let (table, metrics) = table(Duration::from_secs(30));
+        table
+            .push_uplink("connected", 0, bytes::Bytes::from_static(b"x"))
+            .await;
+        assert!(matches!(
+            table.open_download("connected"),
+            OpenDownload::Opened(_)
+        ));
+
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(table.active_sessions(), 1);
+        assert_eq!(metrics.session_timeouts.load(Ordering::Relaxed), 0);
+        table.remove("connected");
+        assert_eq!(table.active_sessions(), 0);
     }
 }

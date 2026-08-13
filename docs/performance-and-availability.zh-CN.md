@@ -4,6 +4,7 @@
 
 本文说明当前热路径、资源模型、故障行为和测量边界；Xray 对比原始证据见
 [Benchmark](benchmarks.zh-CN.md)。
+采样方法、分配优化和当前微基准证据见[热点优化报告](performance-hotspots.zh-CN.md)。
 
 ## 热路径设计
 
@@ -13,6 +14,10 @@
   Last-Modified 和路由别名预先计算；条件 GET 无需读盘即可返回 304；
 - session table 分片，计数器使用 relaxed atomic；目标并发通过 semaphore 限制，
   不会无限创建任务；
+- request path/session 元数据直接借用已解析的 HTTP 值；单 frame body upload 保持为
+  引用计数 `Bytes`，响应 padding 延迟缓存，用户表读取通过 `ArcSwap` 避免读锁；
+- download 先到达时完全不创建孤立 session grace timer；upload 先到达时创建的 timer
+  会在 download 打开或 session 结束时取消，已完成 session 不再滞留整个 TTL；
 - packet 乱序队列和单 session/全局字节预算在接受 payload 内存前预留容量；
 - 默认启用 TCP_NODELAY、keepalive、4096 listen backlog，以及受支持 Linux 上的
   `SO_REUSEPORT`；

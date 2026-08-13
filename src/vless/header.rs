@@ -7,8 +7,9 @@
 //!   `version(1) | addonsLen(1) | addons(body)` — the server sends empty addons (`00 00`).
 
 use super::addons::{Addons, AddonsError, decode_addons_body, encode_addons};
-use super::address::{AddrError, Address, parse_port_then_address};
+use super::address::{AddrError, Address};
 use super::validator::{User, Validator};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub const VERSION: u8 = 0;
@@ -70,6 +71,15 @@ pub async fn decode_request_header<R: AsyncRead + Unpin>(
     reader: &mut R,
     validator: &Validator,
 ) -> Result<(User, RequestHeader, Addons), HeaderError> {
+    let (user, header, addons) = decode_request_header_shared(reader, validator).await?;
+    Ok((user.as_ref().clone(), header, addons))
+}
+
+/// Hot-path decoder that shares immutable user metadata instead of cloning its strings.
+pub async fn decode_request_header_shared<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    validator: &Validator,
+) -> Result<(Arc<User>, RequestHeader, Addons), HeaderError> {
     let version = reader.read_u8().await?;
     if version != VERSION {
         return Err(HeaderError::BadVersion(version));
@@ -77,7 +87,9 @@ pub async fn decode_request_header<R: AsyncRead + Unpin>(
 
     let mut raw_id = [0u8; 16];
     reader.read_exact(&mut raw_id).await?;
-    let user = validator.get(&raw_id).ok_or(HeaderError::AuthFailed)?;
+    let user = validator
+        .get_shared(&raw_id)
+        .ok_or(HeaderError::AuthFailed)?;
 
     let addons_len = reader.read_u8().await? as usize;
     let addons = if addons_len != 0 {
@@ -123,30 +135,32 @@ async fn read_address_port<R: AsyncRead + Unpin>(
     // port(2) + type(1)
     let mut head = [0u8; 3];
     reader.read_exact(&mut head).await?;
-    let extra = match head[2] {
-        super::address::ADDR_TYPE_IPV4 => 4,
-        super::address::ADDR_TYPE_IPV6 => 16,
+    let port = u16::from_be_bytes([head[0], head[1]]);
+    let address = match head[2] {
+        super::address::ADDR_TYPE_IPV4 => {
+            let mut octets = [0u8; 4];
+            reader.read_exact(&mut octets).await?;
+            Address::Ipv4(octets.into())
+        }
+        super::address::ADDR_TYPE_IPV6 => {
+            let mut octets = [0u8; 16];
+            reader.read_exact(&mut octets).await?;
+            Address::Ipv6(octets.into())
+        }
         super::address::ADDR_TYPE_DOMAIN => {
             let dlen = reader.read_u8().await? as usize;
-            // re-buffer: we already consumed the domain length byte; read domain then assemble
+            if dlen == 0 {
+                return Err(HeaderError::Address(AddrError::EmptyDomain));
+            }
             let mut domain = vec![0u8; dlen];
             reader.read_exact(&mut domain).await?;
-            let mut full = Vec::with_capacity(3 + 1 + dlen);
-            full.extend_from_slice(&head);
-            full.push(dlen as u8);
-            full.extend_from_slice(&domain);
-            let (port, addr, _n) = parse_port_then_address(&full)?;
-            return Ok((port, addr));
+            let domain = String::from_utf8(domain)
+                .map_err(|_| HeaderError::Address(AddrError::BadDomainUtf8))?;
+            Address::Domain(domain)
         }
         other => return Err(HeaderError::Address(AddrError::UnknownType(other))),
     };
-    let mut rest = vec![0u8; extra];
-    reader.read_exact(&mut rest).await?;
-    let mut full = Vec::with_capacity(3 + extra);
-    full.extend_from_slice(&head);
-    full.extend_from_slice(&rest);
-    let (port, addr, _n) = parse_port_then_address(&full)?;
-    Ok((port, addr))
+    Ok((port, address))
 }
 
 /// Encode the VLESS response header: `version | addons`. The server always sends empty addons.

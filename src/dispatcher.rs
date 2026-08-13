@@ -3,7 +3,7 @@
 use crate::metrics::Metrics;
 use crate::session::{DownlinkSink, SessionConn, UplinkReader};
 use crate::vless::{
-    Addons, Command, Validator, XRV, decode_request_header, encode_response_header,
+    Addons, Command, Validator, XRV, decode_request_header_shared, encode_response_header,
 };
 use std::collections::HashMap;
 use std::io;
@@ -72,6 +72,22 @@ impl Dispatcher {
 
     pub fn spawn(&self, conn: SessionConn) {
         let this = self.clone();
+        Self::spawn_owned(this, conn);
+    }
+
+    /// Spawn from the shared production dispatcher with one Arc clone instead of cloning
+    /// every Arc-backed field for each session.
+    pub fn spawn_shared(self: &Arc<Self>, conn: SessionConn) {
+        let this = Arc::clone(self);
+        let id_hash = conn.id_hash;
+        tokio::spawn(async move {
+            if let Err(error) = this.serve(conn).await {
+                tracing::debug!(session = id_hash, %error, "session ended");
+            }
+        });
+    }
+
+    fn spawn_owned(this: Self, conn: SessionConn) {
         let id_hash = conn.id_hash;
         tokio::spawn(async move {
             if let Err(error) = this.serve(conn).await {
@@ -128,7 +144,7 @@ impl Dispatcher {
         };
         let (user, header, addons) = match tokio::time::timeout(
             self.handshake_timeout,
-            decode_request_header(&mut reader, &self.validator),
+            decode_request_header_shared(&mut reader, &self.validator),
         )
         .await
         {
@@ -157,21 +173,15 @@ impl Dispatcher {
         match header.command {
             Command::Tcp => {
                 let address = header.address.ok_or(DispatchError::MissingAddress)?;
-                self.serve_tcp(
-                    reader,
-                    writer,
-                    address.connect_target(header.port),
-                    vision_uuid,
-                )
-                .await
+                self.serve_tcp(reader, writer, address, header.port, vision_uuid)
+                    .await
             }
             Command::Udp => {
                 if vision_uuid.is_some() {
                     return Err(DispatchError::VisionUdpUnsupported);
                 }
                 let address = header.address.ok_or(DispatchError::MissingAddress)?;
-                self.serve_udp(reader, writer, address.connect_target(header.port))
-                    .await
+                self.serve_udp(reader, writer, address, header.port).await
             }
             Command::Mux if vision_uuid.is_none() => self.serve_xudp(reader, writer).await,
             Command::Mux => Err(DispatchError::VisionXudpUnavailable),
@@ -183,7 +193,8 @@ impl Dispatcher {
         &self,
         mut reader: ClientReader,
         writer: ProtocolWriter,
-        target: String,
+        address: crate::vless::Address,
+        port: u16,
         vision_uuid: Option<[u8; 16]>,
     ) -> Result<(), DispatchError> {
         let _permit = self
@@ -193,7 +204,9 @@ impl Dispatcher {
             .await
             .map_err(|_| DispatchError::ShuttingDown)?;
         let mut stream =
-            match tokio::time::timeout(self.connect_timeout, TcpStream::connect(target)).await {
+            match tokio::time::timeout(self.connect_timeout, connect_tcp_target(&address, port))
+                .await
+            {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(error)) => {
                     self.metrics
@@ -245,7 +258,8 @@ impl Dispatcher {
         &self,
         mut reader: ClientReader,
         writer: ProtocolWriter,
-        target: String,
+        address: crate::vless::Address,
+        port: u16,
     ) -> Result<(), DispatchError> {
         let _permit = self
             .targets
@@ -253,11 +267,9 @@ impl Dispatcher {
             .acquire_owned()
             .await
             .map_err(|_| DispatchError::ShuttingDown)?;
-        let mut resolved =
-            tokio::time::timeout(self.connect_timeout, tokio::net::lookup_host(target))
-                .await
-                .map_err(|_| DispatchError::ConnectTimeout)??;
-        let target = resolved.next().ok_or(DispatchError::MissingAddress)?;
+        let target = tokio::time::timeout(self.connect_timeout, resolve_address(&address, port))
+            .await
+            .map_err(|_| DispatchError::ConnectTimeout)??;
         let bind = if target.is_ipv6() {
             "[::]:0"
         } else {
@@ -518,8 +530,33 @@ async fn spawn_association(
 }
 
 async fn resolve_target(target: &crate::xudp::Target) -> Result<SocketAddr, DispatchError> {
-    let mut addresses = tokio::net::lookup_host(target.address.connect_target(target.port)).await?;
-    addresses.next().ok_or(DispatchError::MissingAddress)
+    resolve_address(&target.address, target.port).await
+}
+
+async fn connect_tcp_target(address: &crate::vless::Address, port: u16) -> io::Result<TcpStream> {
+    match address {
+        crate::vless::Address::Ipv4(ip) => {
+            TcpStream::connect(SocketAddr::new((*ip).into(), port)).await
+        }
+        crate::vless::Address::Ipv6(ip) => {
+            TcpStream::connect(SocketAddr::new((*ip).into(), port)).await
+        }
+        crate::vless::Address::Domain(domain) => TcpStream::connect((domain.as_str(), port)).await,
+    }
+}
+
+async fn resolve_address(
+    address: &crate::vless::Address,
+    port: u16,
+) -> Result<SocketAddr, DispatchError> {
+    match address {
+        crate::vless::Address::Ipv4(ip) => Ok(SocketAddr::new((*ip).into(), port)),
+        crate::vless::Address::Ipv6(ip) => Ok(SocketAddr::new((*ip).into(), port)),
+        crate::vless::Address::Domain(domain) => tokio::net::lookup_host((domain.as_str(), port))
+            .await?
+            .next()
+            .ok_or(DispatchError::MissingAddress),
+    }
 }
 
 fn socket_target(address: SocketAddr) -> crate::xudp::Target {

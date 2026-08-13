@@ -16,6 +16,7 @@ pub mod vision;
 pub use addons::{Addons, XRV};
 pub use address::Address;
 pub use header::{
-    Command, HeaderError, RequestHeader, decode_request_header, encode_response_header,
+    Command, HeaderError, RequestHeader, decode_request_header, decode_request_header_shared,
+    encode_response_header,
 };
 pub use validator::{User, Validator, process_uuid};

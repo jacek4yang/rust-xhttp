@@ -13,6 +13,7 @@ ACME/手动证书、网站 fallback、VLESS-Encryption、验证和排错。
 | 配置与部署 | [English](configuration.md) | [简体中文](configuration.zh-CN.md) |
 | Benchmark 与原始证据 | [English](benchmarks.md) | [简体中文](benchmarks.zh-CN.md) |
 | 性能与可用性 | [English](performance-and-availability.md) | [简体中文](performance-and-availability.zh-CN.md) |
+| 热点优化报告 | [English](performance-hotspots.md) | [简体中文](performance-hotspots.zh-CN.md) |
 | 安全政策 | [English](../SECURITY.md) | [简体中文](../SECURITY.zh-CN.md) |
 
 ## 工程说明

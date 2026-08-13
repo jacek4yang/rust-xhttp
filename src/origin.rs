@@ -4,10 +4,10 @@ use crate::config::{FallbackConfig, TlsConfig, UplinkDataPlacement, XhttpConfig}
 use crate::metrics::Metrics;
 use crate::session::{OpenDownload, PushResult, SessionTable};
 use crate::site;
-use crate::xhttp::{RequestKind, path_matches};
+use crate::xhttp::{BorrowedRequestKind, path_matches};
 use crate::xhttp::{
-    classify, extract_meta_from_path, extract_padding, generate_response_padding, host_matches,
-    is_padding_valid,
+    ResponsePadding, classify_borrowed, extract_meta_from_path_borrowed, extract_padding_len,
+    host_matches, is_padding_len_valid,
 };
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -33,6 +33,7 @@ pub struct Origin {
     sessions: Arc<SessionTable>,
     metrics: Arc<Metrics>,
     site: Arc<site::StaticSite>,
+    response_padding: Arc<ResponsePadding>,
     tls: Option<crate::tls::Server>,
     tcp_nodelay: bool,
     tcp_keepalive: Option<Duration>,
@@ -52,11 +53,13 @@ impl Origin {
     ) -> Result<Self, OriginError> {
         let tls = tls.map(crate::tls::Server::from_config).transpose()?;
         let site = Arc::new(site::StaticSite::from_config(fallback)?);
+        let response_padding = Arc::new(ResponsePadding::new(xhttp.padding_from, xhttp.padding_to));
         Ok(Self {
             xhttp: Arc::new(xhttp),
             sessions,
             metrics,
             site,
+            response_padding,
             tls,
             tcp_nodelay,
             tcp_keepalive,
@@ -80,6 +83,7 @@ impl Origin {
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), OriginError> {
+        let this = Arc::new(self);
         let mut shutdown = Box::pin(shutdown_signal());
         let mut connections = JoinSet::new();
         loop {
@@ -103,7 +107,7 @@ impl Origin {
                         }
                         Err(error) => return Err(OriginError::Io(error)),
                     };
-                    let this = self.clone();
+                    let this = this.clone();
                     connections.spawn(async move {
                         if let Err(error) = this.serve_connection(stream).await {
                             tracing::debug!(%error, "origin connection ended");
@@ -114,7 +118,7 @@ impl Origin {
         }
 
         drop(listener);
-        let drained = tokio::time::timeout(self.graceful_shutdown, async {
+        let drained = tokio::time::timeout(this.graceful_shutdown, async {
             while connections.join_next().await.is_some() {}
         })
         .await;
@@ -130,7 +134,7 @@ impl Origin {
         Ok(())
     }
 
-    async fn serve_connection(&self, stream: TcpStream) -> Result<(), OriginError> {
+    async fn serve_connection(self: Arc<Self>, stream: TcpStream) -> Result<(), OriginError> {
         crate::net::tune_stream(&stream, self.tcp_nodelay, self.tcp_keepalive);
         let stream = match &self.tls {
             Some(tls) => tokio::time::timeout(self.handshake_timeout, tls.accept(stream))
@@ -141,16 +145,15 @@ impl Origin {
         self.serve_io(TokioIo::new(stream)).await
     }
 
-    async fn serve_io<I>(&self, io: TokioIo<I>) -> Result<(), OriginError>
+    async fn serve_io<I>(self: Arc<Self>, io: TokioIo<I>) -> Result<(), OriginError>
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let this = self.clone();
         hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
             .serve_connection(
                 io,
                 service_fn(move |request| {
-                    let this = this.clone();
+                    let this = self.clone();
                     async move { Ok::<_, Infallible>(this.handle(request).await) }
                 }),
             )
@@ -187,19 +190,22 @@ impl Origin {
             self.add_xhttp_response_padding(&mut response);
             return response;
         }
-        let padding = extract_padding(request.headers(), request.uri());
-        if !is_padding_valid(&padding, self.xhttp.padding_from, self.xhttp.padding_to) {
+        let padding_len = extract_padding_len(request.headers(), request.uri());
+        if !is_padding_len_valid(padding_len, self.xhttp.padding_from, self.xhttp.padding_to) {
             return self.site_response(&request);
         }
-        let meta = extract_meta_from_path(&self.xhttp.path, request.uri());
-        let mut response = match classify(request.method(), &meta) {
-            RequestKind::PacketUpload { session_id, seq } => {
-                self.upload(request, &session_id, seq).await
+        let (parts, body) = request.into_parts();
+        let meta = extract_meta_from_path_borrowed(&self.xhttp.path, &parts.uri);
+        let mut response = match classify_borrowed(&parts.method, &meta) {
+            BorrowedRequestKind::PacketUpload { session_id, seq } => {
+                self.upload(&parts.headers, body, session_id, seq).await
             }
-            RequestKind::StreamDownload { session_id } => self.download(&session_id),
-            RequestKind::Unsupported => empty(StatusCode::INTERNAL_SERVER_ERROR),
-            RequestKind::StreamUp { .. } | RequestKind::StreamOne => empty(StatusCode::BAD_REQUEST),
-            RequestKind::Options => empty(StatusCode::OK),
+            BorrowedRequestKind::StreamDownload { session_id } => self.download(session_id),
+            BorrowedRequestKind::Unsupported => empty(StatusCode::INTERNAL_SERVER_ERROR),
+            BorrowedRequestKind::StreamUp { .. } | BorrowedRequestKind::StreamOne => {
+                empty(StatusCode::BAD_REQUEST)
+            }
+            BorrowedRequestKind::Options => empty(StatusCode::OK),
         };
         self.add_xhttp_response_padding(&mut response);
         response
@@ -207,18 +213,18 @@ impl Origin {
 
     async fn upload(
         &self,
-        request: Request<Incoming>,
+        headers: &http::HeaderMap,
+        mut body: Incoming,
         session_id: &str,
         seq: u64,
     ) -> Response<Body> {
-        let (parts, mut body) = request.into_parts();
         let mut payload = BytesMut::new();
-        match self.decode_header_payload(&parts.headers) {
+        match self.decode_header_payload(headers) {
             Ok(header_payload) => payload.extend_from_slice(&header_payload),
             Err(UploadPayloadError::InvalidBase64) => return empty(StatusCode::BAD_REQUEST),
             Err(UploadPayloadError::TooLarge) => return self.reject_upload_too_large(),
         }
-        match self.decode_cookie_payload(&parts.headers) {
+        match self.decode_cookie_payload(headers) {
             Ok(cookie_payload) => payload.extend_from_slice(&cookie_payload),
             Err(UploadPayloadError::InvalidBase64) => return empty(StatusCode::BAD_REQUEST),
             Err(UploadPayloadError::TooLarge) => return self.reject_upload_too_large(),
@@ -236,19 +242,22 @@ impl Origin {
                 Err(UploadPayloadError::InvalidBase64) => return empty(StatusCode::BAD_REQUEST),
                 Err(UploadPayloadError::TooLarge) => return self.reject_upload_too_large(),
             };
+            if payload.is_empty() {
+                return self.finish_upload(session_id, seq, body_payload).await;
+            }
             payload.extend_from_slice(&body_payload);
         }
+        self.finish_upload(session_id, seq, payload.freeze()).await
+    }
+
+    async fn finish_upload(&self, session_id: &str, seq: u64, payload: Bytes) -> Response<Body> {
         if payload.len() > self.xhttp.max_each_post_bytes {
             return self.reject_upload_too_large();
         }
         self.metrics
             .upload_bytes
             .fetch_add(payload.len() as u64, Ordering::Relaxed);
-        match self
-            .sessions
-            .push_uplink(session_id, seq, payload.freeze())
-            .await
-        {
+        match self.sessions.push_uplink(session_id, seq, payload).await {
             Some(PushResult::Accepted | PushResult::Duplicate) => {
                 let mut response = empty(StatusCode::OK);
                 if self.xhttp.uplink_data_placement != UplinkDataPlacement::Body {
@@ -278,23 +287,38 @@ impl Origin {
         }
     }
 
-    async fn read_body_payload(&self, body: &mut Incoming) -> Result<BytesMut, UploadPayloadError> {
-        let mut payload = BytesMut::new();
+    async fn read_body_payload(&self, body: &mut Incoming) -> Result<Bytes, UploadPayloadError> {
+        let mut first: Option<Bytes> = None;
+        let mut combined: Option<BytesMut> = None;
+        let mut total = 0usize;
         while let Some(frame) = body.frame().await {
             let Ok(frame) = frame else {
                 return Err(UploadPayloadError::InvalidBase64);
             };
             if let Ok(data) = frame.into_data() {
-                let Some(total) = payload.len().checked_add(data.len()) else {
+                if data.is_empty() {
+                    continue;
+                }
+                let Some(next_total) = total.checked_add(data.len()) else {
                     return Err(UploadPayloadError::TooLarge);
                 };
-                if total > self.xhttp.max_each_post_bytes {
+                if next_total > self.xhttp.max_each_post_bytes {
                     return Err(UploadPayloadError::TooLarge);
                 }
-                payload.extend_from_slice(&data);
+                total = next_total;
+                if let Some(payload) = combined.as_mut() {
+                    payload.extend_from_slice(&data);
+                } else if let Some(initial) = first.take() {
+                    let mut payload = BytesMut::with_capacity(total);
+                    payload.extend_from_slice(&initial);
+                    payload.extend_from_slice(&data);
+                    combined = Some(payload);
+                } else {
+                    first = Some(data);
+                }
             }
         }
-        Ok(payload)
+        Ok(combined.map_or_else(|| first.unwrap_or_default(), BytesMut::freeze))
     }
 
     fn decode_header_payload(
@@ -357,15 +381,19 @@ impl Origin {
     }
 
     fn download(&self, session_id: &str) -> Response<Body> {
-        let reader = match self.sessions.open_download(session_id) {
+        let mut reader = match self.sessions.open_download(session_id) {
             OpenDownload::Opened(reader) => reader,
             OpenDownload::Conflict => return empty(StatusCode::CONFLICT),
             OpenDownload::Capacity => return empty(StatusCode::SERVICE_UNAVAILABLE),
         };
+        let (session_id, id_hash) = reader
+            .take_session_key()
+            .expect("session table attaches a download cleanup key");
         let state = DownloadState {
             reader,
             sessions: self.sessions.clone(),
-            session_id: session_id.to_string(),
+            session_id,
+            id_hash,
         };
         let body = StreamBody::new(stream::unfold(state, |mut state| async move {
             state
@@ -432,10 +460,10 @@ impl Origin {
     }
 
     fn add_xhttp_response_padding(&self, response: &mut Response<Body>) {
-        let padding = generate_response_padding(self.xhttp.padding_from, self.xhttp.padding_to);
-        response
-            .headers_mut()
-            .insert("x-padding", padding.parse().unwrap());
+        response.headers_mut().insert(
+            http::header::HeaderName::from_static("x-padding"),
+            self.response_padding.header_value(),
+        );
     }
 }
 
@@ -525,12 +553,13 @@ fn cookie_value(headers: &http::HeaderMap, key: &str) -> Option<String> {
 struct DownloadState {
     reader: crate::session::DownlinkReader,
     sessions: Arc<SessionTable>,
-    session_id: String,
+    session_id: Arc<str>,
+    id_hash: u64,
 }
 
 impl Drop for DownloadState {
     fn drop(&mut self) {
-        self.sessions.remove(&self.session_id);
+        self.sessions.remove_hashed(&self.session_id, self.id_hash);
     }
 }
 
@@ -539,10 +568,12 @@ fn empty(status: StatusCode) -> Response<Body> {
 }
 
 fn response(status: StatusCode, body: Body) -> Response<Body> {
-    let mut response = Response::builder().status(status).body(body).unwrap();
-    response
-        .headers_mut()
-        .insert(http::header::SERVER, "nginx".parse().unwrap());
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        http::header::SERVER,
+        http::HeaderValue::from_static("nginx"),
+    );
     response
 }
 

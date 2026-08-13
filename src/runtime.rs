@@ -48,17 +48,19 @@ pub async fn serve(cfg: Arc<Config>) -> Result<(), Box<dyn std::error::Error>> {
         )),
     };
 
-    let dispatcher = Dispatcher::new(
-        validator,
-        metrics.clone(),
-        cfg.limits.max_concurrent_target_conns,
-        cfg.limits.target_connect(),
-        cfg.limits.udp_idle(),
-    )
-    .with_handshake_timeout(cfg.limits.handshake_timeout())
-    .with_tcp_tuning(cfg.listen.tcp_nodelay, cfg.listen.tcp_keepalive())
-    .with_encryption(encryption);
-    let handler: Handler = Arc::new(move |conn| dispatcher.spawn(conn));
+    let dispatcher = Arc::new(
+        Dispatcher::new(
+            validator,
+            metrics.clone(),
+            cfg.limits.max_concurrent_target_conns,
+            cfg.limits.target_connect(),
+            cfg.limits.udp_idle(),
+        )
+        .with_handshake_timeout(cfg.limits.handshake_timeout())
+        .with_tcp_tuning(cfg.listen.tcp_nodelay, cfg.listen.tcp_keepalive())
+        .with_encryption(encryption),
+    );
+    let handler: Handler = Arc::new(move |conn| dispatcher.spawn_shared(conn));
 
     let sessions = SessionTable::new(
         SessionConfig {

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.1] - 2026-08-14
+
+### Changed
+
+- Reduced authenticated XHTTP hot-path allocation, locking, address-resolution,
+  reference-count, and session teardown overhead using profile-guided changes.
+- Cancelled orphan-session grace timers promptly and skipped them entirely for the
+  normal download-first request order, substantially reducing transient RSS growth.
+- Added a sustained PID-scoped `perf` driver, focused allocation reference
+  microbenchmarks, and a bilingual hotspot optimization report.
+
 ## [0.1.0] - 2026-08-13
 
 ### Added
@@ -26,3 +39,5 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added bounded request/session/target controls and fail-closed memory accounting.
 
 [0.1.0]: https://github.com/jacek4yang/rust-xhttp/releases/tag/v0.1.0
+[0.1.1]: https://github.com/jacek4yang/rust-xhttp/compare/v0.1.0...v0.1.1
+[Unreleased]: https://github.com/jacek4yang/rust-xhttp/compare/v0.1.1...HEAD

@@ -102,6 +102,7 @@ VLESS 协议。不支持 stream-up/stream-one，也不声称“不可检测”�
 | 配置与部署 | [English](docs/configuration.md) | [简体中文](docs/configuration.zh-CN.md) |
 | Benchmark 与证据 | [English](docs/benchmarks.md) | [简体中文](docs/benchmarks.zh-CN.md) |
 | 性能与可用性 | [English](docs/performance-and-availability.md) | [简体中文](docs/performance-and-availability.zh-CN.md) |
+| 热点优化报告 | [English](docs/performance-hotspots.md) | [简体中文](docs/performance-hotspots.zh-CN.md) |
 | 安全政策 | [English](SECURITY.md) | [简体中文](SECURITY.zh-CN.md) |
 
 ## 许可证
